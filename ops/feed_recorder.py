@@ -1,6 +1,7 @@
 """Read-only order-flow recorder: trades by price and resting depth, for STACKED and RESTING.
 
-Subscribes to PUBLIC Binance USDS-M streams only (raw trade and partial depth). It never
+Subscribes to PUBLIC Binance USDS-M streams only (aggregated trades and partial depth), on
+the same endpoints bot_ds uses: trades on /market/stream, depth on /public/stream. It never
 authenticates and never calls an order endpoint, so it cannot place, change or cancel
 anything. It writes, per symbol and per UTC day, gzip JSON-lines:
 
@@ -35,7 +36,8 @@ from exchange.rest import RestClient
 
 log = logging.getLogger(__name__)
 
-STREAM_URL = "wss://fstream.binance.com/stream?streams="
+MARKET_STREAM_BASE = "wss://fstream.binance.com/market/stream?streams="
+PUBLIC_STREAM_BASE = "wss://fstream.binance.com/public/stream?streams="
 MINUTE_MS = 60_000
 DEPTH_LEVELS = 20
 RECONNECT_MAX_SECONDS = 60
@@ -142,65 +144,61 @@ class SymbolRecorder:
         for record in self._footprint.flush_before(now_ms):
             self._writer.write("trades", self.symbol, record["m"], record)
 
-    def gap(self, start_ms, end_ms):
-        self._footprint = MinuteFootprint()
+    def gap(self, kind, start_ms, end_ms):
         marker = {"gap_from": start_ms, "gap_to": end_ms}
-        self._writer.write("trades", self.symbol, start_ms, marker)
-        self._writer.write("depth", self.symbol, start_ms, marker)
+        if kind == "trades":
+            self._footprint = MinuteFootprint()
+        self._writer.write(kind, self.symbol, start_ms, marker)
 
 
-def stream_names(symbols):
-    names = []
-    for symbol in symbols:
-        lower = symbol.lower()
-        names.append(f"{lower}@trade")
-        names.append(f"{lower}@depth{DEPTH_LEVELS}@500ms")
-    return names
+def trade_stream_names(symbols):
+    return [f"{symbol.lower()}@aggTrade" for symbol in symbols]
+
+
+def depth_stream_names(symbols):
+    return [f"{symbol.lower()}@depth{DEPTH_LEVELS}@500ms" for symbol in symbols]
 
 
 def chunk_symbols(symbols, max_streams):
-    per_chunk = max(1, max_streams // 2)
-    return [symbols[i:i + per_chunk] for i in range(0, len(symbols), per_chunk)]
+    return [symbols[i:i + max_streams] for i in range(0, len(symbols), max_streams)]
 
 
-async def run_chunk(symbols, writer, depth_every_ms):
-    recorders = {symbol: SymbolRecorder(symbol, writer, depth_every_ms) for symbol in symbols}
-    url = STREAM_URL + "/".join(stream_names(symbols))
+async def run_socket(kind, url, recorders, flush_every=False):
+    """One socket, reconnecting with backoff; a gap marker covers every outage."""
     down_since = None
     backoff = 1
-
     while True:
         try:
             async with websockets.connect(url, ping_interval=20, max_size=2 ** 22) as ws:
                 if down_since is not None:
                     for recorder in recorders.values():
-                        recorder.gap(down_since, int(time.time() * 1000))
+                        recorder.gap(kind, down_since, int(time.time() * 1000))
                     down_since = None
                 backoff = 1
-                log.info("connected: %d symbols", len(symbols))
+                log.info("%s socket connected: %d symbols", kind, len(recorders))
                 while True:
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=5)
                     except asyncio.TimeoutError:
-                        now = int(time.time() * 1000)
-                        for recorder in recorders.values():
-                            recorder.flush(now)
+                        if flush_every:
+                            now = int(time.time() * 1000)
+                            for recorder in recorders.values():
+                                recorder.flush(now)
                         continue
                     stream, data = parse_message(raw)
                     if stream is None:
                         continue
-                    symbol = stream.split("@", 1)[0].upper()
-                    recorder = recorders.get(symbol)
+                    recorder = recorders.get(stream.split("@", 1)[0].upper())
                     if recorder is None:
                         continue
-                    if stream.endswith("@trade"):
+                    if kind == "trades":
                         recorder.on_trade(data)
-                    elif "@depth" in stream:
+                    else:
                         recorder.on_depth(data)
         except (OSError, websockets.WebSocketException) as exc:
             if down_since is None:
                 down_since = int(time.time() * 1000)
-            log.warning("socket down (%s); retrying in %ss", exc, backoff)
+            log.warning("%s socket down (%s); retrying in %ss", kind, exc, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, RECONNECT_MAX_SECONDS)
 
@@ -220,8 +218,14 @@ def select_symbols(rest, quote_asset, count):
 async def main_async(symbols, out_root):
     writer = DailyWriter(out_root)
     depth_every_ms = int(config.FEED_DEPTH_SAMPLE_SECONDS * 1000)
-    tasks = [run_chunk(chunk, writer, depth_every_ms)
-             for chunk in chunk_symbols(symbols, config.FEED_MAX_STREAMS_PER_CONNECTION)]
+    tasks = []
+    for chunk in chunk_symbols(symbols, config.FEED_SYMBOLS_PER_SOCKET):
+        recorders = {symbol: SymbolRecorder(symbol, writer, depth_every_ms) for symbol in chunk}
+        tasks.append(run_socket(
+            "trades", MARKET_STREAM_BASE + "/".join(trade_stream_names(chunk)),
+            recorders, flush_every=True))
+        tasks.append(run_socket(
+            "depth", PUBLIC_STREAM_BASE + "/".join(depth_stream_names(chunk)), recorders))
     await asyncio.gather(*tasks)
 
 

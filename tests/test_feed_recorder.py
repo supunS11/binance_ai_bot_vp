@@ -94,7 +94,7 @@ class WriterTests(unittest.TestCase):
         writer = fr.DailyWriter(self.root)
         recorder = fr.SymbolRecorder("BTCUSDT", writer, depth_every_ms=5000)
         recorder.on_trade({"T": T0 + 1000, "p": "100", "q": "1", "m": False})
-        recorder.gap(T0 + 2000, T0 + 9000)
+        recorder.gap("trades", T0 + 2000, T0 + 9000)
         recorder.on_trade({"T": T0 + 10_000, "p": "100", "q": "1", "m": False})
         recorder.flush(T0 + MIN)
         path = os.path.join(self.root, "trades", "BTCUSDT", fr.utc_day(T0) + ".jsonl.gz")
@@ -128,14 +128,18 @@ class SymbolSelectionTests(unittest.TestCase):
 
 
 class ChunkingTests(unittest.TestCase):
-    def test_two_streams_per_symbol(self):
-        names = fr.stream_names(["btcusdt"])
-        self.assertEqual(names, ["btcusdt@trade", "btcusdt@depth20@500ms"])
+    def test_trades_use_the_market_endpoint_stream_name(self):
+        self.assertEqual(fr.trade_stream_names(["BTCUSDT"]), ["btcusdt@aggTrade"])
+        self.assertTrue(fr.MARKET_STREAM_BASE.startswith("wss://fstream.binance.com/market/"))
 
-    def test_symbols_are_split_so_no_connection_exceeds_the_stream_limit(self):
+    def test_depth_uses_the_public_endpoint_stream_name(self):
+        self.assertEqual(fr.depth_stream_names(["BTCUSDT"]), ["btcusdt@depth20@500ms"])
+        self.assertTrue(fr.PUBLIC_STREAM_BASE.startswith("wss://fstream.binance.com/public/"))
+
+    def test_symbols_are_split_so_no_socket_exceeds_the_limit(self):
         symbols = [f"S{i}USDT" for i in range(250)]
         chunks = fr.chunk_symbols(symbols, max_streams=200)
-        self.assertTrue(all(len(c) * 2 <= 200 for c in chunks))
+        self.assertTrue(all(len(c) <= 200 for c in chunks))
         self.assertEqual(sum(len(c) for c in chunks), 250)
 
 

@@ -1140,7 +1140,7 @@ FEED_SYMBOL_COUNT = env_int("FEED_SYMBOL_COUNT", 50)
 FEED_QUOTE_ASSET = env_str("FEED_QUOTE_ASSET", "USDT").upper()
 FEED_OUT_DIR = env_str("FEED_OUT_DIR", "feed_data")
 FEED_DEPTH_SAMPLE_SECONDS = env_float("FEED_DEPTH_SAMPLE_SECONDS", 5.0)
-FEED_MAX_STREAMS_PER_CONNECTION = env_int("FEED_MAX_STREAMS_PER_CONNECTION", 200)
+FEED_SYMBOLS_PER_SOCKET = env_int("FEED_SYMBOLS_PER_SOCKET", 100)
 
 
 # ------------------------------------------------------------------- runtime
