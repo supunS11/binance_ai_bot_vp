@@ -1,0 +1,17 @@
+# Secrets and local settings
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Runtime output - regenerable or machine-specific
+logs/
+*.log
+feed_data/
+vp_state.sqlite
+data_cache*/
+
+# Generated research output - large, regenerable from replay (summaries stay in CALIBRATION.md)
+calibration/**/*.csv
+calibration/*.csv
