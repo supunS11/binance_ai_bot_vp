@@ -27,6 +27,7 @@ That single choice is what makes the whole pipeline replayable: the research har
 passes a simulated clock into the same call and gets the same answer.
 """
 import logging
+import time
 from dataclasses import dataclass
 
 import config
@@ -97,6 +98,7 @@ class Scanner:
         # symbol -> (week_start_ms, WeeklyBundle). Same reasoning as the frozen-
         # daily cache: a completed calendar week never changes.
         self._weekly = {}
+        self._ticker_cache = None
 
     # ------------------------------------------------------------ frozen side
 
@@ -385,16 +387,47 @@ class Scanner:
         excluding them here saves the fetch rather than changing the outcome.
         """
         try:
-            tickers = self._rest.ticker_24hr()
+            tickers = self._cached_tickers()
         except Exception as exc:                  # noqa: BLE001
             log.error("ticker fetch failed: %s", exc)
             return []
+
+        if config.SCAN_SYMBOLS:
+            return self._pinned_universe(tickers)
 
         from exchange.symbols import rank_by_quote_volume
         ranked = rank_by_quote_volume(tickers, self._catalog,
                                      config.TRADE_UNIVERSE_SIZE)
         return [row for row in ranked
                 if row["quote_volume"] >= config.TRADE_MIN_24H_QUOTE_VOLUME]
+
+    def _cached_tickers(self):
+        """24h tickers, refetched at most every WATCHLIST_REFRESH_SECONDS.
+
+        One bulk call covers every symbol, so the cache only trims weight; the live
+        universe changes slowly enough that a few minutes of staleness is harmless.
+        """
+        now = time.monotonic()
+        if self._ticker_cache is not None and now - self._ticker_cache[0] < config.WATCHLIST_REFRESH_SECONDS:
+            return self._ticker_cache[1]
+        tickers = self._rest.ticker_24hr()
+        self._ticker_cache = (now, tickers)
+        return tickers
+
+    def _pinned_universe(self, tickers):
+        """SCAN_SYMBOLS, in the order given. Operator-chosen, so the volume floor does not
+        apply - the setups' own gates still reject thin or unsuitable symbols."""
+        volumes = {(row.get("symbol") or "").upper(): float(row.get("quoteVolume") or 0.0)
+                   for row in tickers}
+        tradable = set(self._catalog.tradable_symbols())
+        rows = []
+        for rank, symbol in enumerate(config.SCAN_SYMBOLS, start=1):
+            if symbol not in tradable:
+                log.warning("pinned symbol %s is not tradable; skipped", symbol)
+                continue
+            rows.append({"symbol": symbol, "qv_rank": rank,
+                         "quote_volume": volumes.get(symbol, 0.0)})
+        return rows
 
     def research_universe(self, size=None):
         """The wide ranking, with qv_rank recorded for the in/out-of-sample split.

@@ -136,6 +136,20 @@ TRADE_UNIVERSE_SIZE = env_int("TRADE_UNIVERSE_SIZE", 120)
 TRADE_MIN_24H_QUOTE_VOLUME = env_float("TRADE_MIN_24H_QUOTE_VOLUME", 50_000_000.0)
 
 SYMBOL_DENYLIST = env_str_list("SYMBOL_DENYLIST", [])
+# Live scan universe, as bot_ds does it. SCAN_SYMBOLS pins the list (in the order given,
+# volume floor bypassed); empty means the TRADE_UNIVERSE_SIZE liquid head by volume.
+# The 24h ticker is refetched at most every WATCHLIST_REFRESH_SECONDS.
+SCAN_SYMBOLS = env_str_list("SCAN_SYMBOLS", [])
+WATCHLIST_REFRESH_SECONDS = env_float("WATCHLIST_REFRESH_SECONDS", 300.0)
+
+# Live 1m candles over websockets (data/ws_feed.py). OFF by default: REST stays the path
+# until the feed has been checked against it. When on, the feed only fills the candle
+# cache and REST still covers every gap.
+WS_ENABLED = env_bool("WS_ENABLED", "False")
+WS_SYMBOLS_PER_SOCKET = env_int("WS_SYMBOLS_PER_SOCKET", 100)
+WS_STALE_SECONDS = env_float("WS_STALE_SECONDS", 45.0)
+WS_WATCHDOG_INTERVAL_SECONDS = env_float("WS_WATCHDOG_INTERVAL_SECONDS", 15.0)
+WS_RESTART_COOLDOWN_SECONDS = env_float("WS_RESTART_COOLDOWN_SECONDS", 30.0)
 
 
 # ------------------------------------------------------------- profile engine

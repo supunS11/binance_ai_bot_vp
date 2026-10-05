@@ -43,6 +43,7 @@ import scanner as scanner_mod
 import sessions
 import state_machine as state_machine_mod
 from data.store import KlineCache
+from data.ws_feed import KlineFeed
 from exchange.rest import RestClient
 from exchange.symbols import SymbolCatalog
 from execution.positions import PositionManager
@@ -59,6 +60,7 @@ class VolumeProfileBot:
         self.rest = RestClient()
         self.catalog = SymbolCatalog(self.rest)
         self.cache = KlineCache(self.rest)
+        self.feed = KlineFeed(self.cache.ingest) if config.WS_ENABLED else None
         self.journal = Journal()
         self.router = OrderRouter(self.rest, self.catalog, self.journal)
         self.positions = PositionManager(self.rest, self.catalog, self.router,
@@ -176,6 +178,8 @@ class VolumeProfileBot:
     def scan_for_entries(self):
         """One pass over the trade universe. Returns (scanned, contexts, candidates)."""
         universe = self.scanner.trade_universe()
+        if self.feed is not None and universe:
+            self.feed.set_symbols([row["symbol"] for row in universe])
         if not universe:
             log.warning("trade universe is empty")
             return 0, 0, 0
@@ -298,6 +302,8 @@ class VolumeProfileBot:
                  len(self.positions.managed()))
         for managed in self.positions.managed().values():
             self.state_store.save_position(managed)
+        if self.feed is not None:
+            self.feed.stop()
         self.state_store.close()
         self.journal.close()
 

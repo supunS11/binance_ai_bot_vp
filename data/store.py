@@ -83,6 +83,24 @@ class KlineCache:
             return [series[key] for key in sorted(series)
                     if start_ms <= key < end_ms]
 
+    def ingest(self, symbol, candle):
+        """Append one live closed candle if it extends the series with no gap.
+
+        Only a candle that is exactly the next minute is taken. Anything else - the cache
+        is empty, or the socket skipped a minute - is dropped, and the next REST fetch
+        fills the hole. That keeps the series contiguous, which minute_candles relies on
+        to fetch only the tail.
+        """
+        symbol = symbol.upper()
+        with self._lock:
+            series = self._minute.get(symbol)
+            if not series:
+                return False
+            if candle.open_time != max(series) + klines_mod.INTERVAL_MS["1m"]:
+                return False
+            series[candle.open_time] = candle
+            return True
+
     def trim(self, symbol, keep_from_ms):
         """Drop cached minutes older than needed, to bound memory.
 
