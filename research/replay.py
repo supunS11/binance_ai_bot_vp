@@ -352,11 +352,12 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
 
 
 def replay_symbol(scanner, cache, catalog, symbol, qv_rank, session_ids,
-                  portfolio, apply_gates=True, only_setup=None):
+                  portfolio, apply_gates=True, only_setup=None, step_ms=None):
     """Replay every session for one symbol. Returns (trade rows, reject tally)."""
     rows = []
     rejects = {}
     confirm_ms = klines_mod.INTERVAL_MS.get(config.CONFIRM_INTERVAL, 900_000)
+    decision_ms = step_ms or confirm_ms
     spec = catalog.get(symbol)
     if spec is None:
         return rows, rejects
@@ -370,7 +371,7 @@ def replay_symbol(scanner, cache, catalog, symbol, qv_rank, session_ids,
         machine = StateMachine()
         taken = set()
 
-        step = session_start + confirm_ms
+        step = session_start + decision_ms
         while step <= session_end:
             cache.set_as_of(step)
             try:
@@ -378,12 +379,12 @@ def replay_symbol(scanner, cache, catalog, symbol, qv_rank, session_ids,
             except Exception as exc:                    # noqa: BLE001
                 log.debug("%s %s build_context: %s", symbol, session_id, exc)
                 rejects["EXCEPTION"] = rejects.get("EXCEPTION", 0) + 1
-                step += confirm_ms
+                step += decision_ms
                 continue
 
             if ctx is None:
                 rejects[reason] = rejects.get(reason, 0) + 1
-                step += confirm_ms
+                step += decision_ms
                 continue
 
             candidates, rejections = machine.evaluate(ctx, research_mode=True)
@@ -422,7 +423,7 @@ def replay_symbol(scanner, cache, catalog, symbol, qv_rank, session_ids,
                 rows.append(_row(candidate, ctx, candidate.entry_price, outcome,
                                  qv_rank))
 
-            step += confirm_ms
+            step += decision_ms
 
         cache.clear_frozen()
     cache.release(symbol)
@@ -434,7 +435,7 @@ _LIVE_ENABLE_FLAGS = ("S1_POC_ENABLED", "S1_LVN_ENABLED", "S2_ENABLED", "S3_ENAB
 
 def run(root=None, limit_symbols=None, limit_sessions=None, apply_gates=True,
         only_setup=None, equity=10_000.0, shard=None, shards=1,
-        force_enable_setups=True):
+        force_enable_setups=True, step_minutes=None):
     """Replay history through the live pipeline.
 
     `force_enable_setups=True` (the default) makes every setup evaluable regardless of
@@ -499,7 +500,8 @@ def run(root=None, limit_symbols=None, limit_sessions=None, apply_gates=True,
         rows, rejects = replay_symbol(scanner, cache, catalog, symbol,
                                       entry["qv_rank"], session_ids, portfolio,
                                       apply_gates=apply_gates,
-                                      only_setup=only_setup)
+                                      only_setup=only_setup,
+                                      step_ms=step_minutes * 60_000 if step_minutes else None)
         all_rows.extend(rows)
         for key, count in rejects.items():
             all_rejects[key] = all_rejects.get(key, 0) + count
@@ -642,6 +644,9 @@ def main(argv=None):
     parser.add_argument("--sessions", type=int, default=None,
                         help="limit to the most recent N sessions per symbol")
     parser.add_argument("--setup", default=None, help="replay one setup only")
+    parser.add_argument("--step-minutes", type=int, default=None,
+                        help="evaluate every N minutes instead of CONFIRM_INTERVAL "
+                             "(holding and fill windows are unchanged)")
     parser.add_argument("--s3-entry-mode", default=None, choices=("confirmed", "accepted"),
                         help="override config.S3_ENTRY_MODE for this run - "
                              "'confirmed' (default behaviour) or 'accepted' "
@@ -749,7 +754,8 @@ def main(argv=None):
                         limit_sessions=args.sessions,
                         apply_gates=not args.no_gates, only_setup=args.setup,
                         shard=args.shard, shards=args.shards,
-                        force_enable_setups=not args.respect_live_flags)
+                        force_enable_setups=not args.respect_live_flags,
+                        step_minutes=args.step_minutes)
 
     name = ("trades.csv" if args.shard is None
             else f"trades_shard{args.shard}.csv")
