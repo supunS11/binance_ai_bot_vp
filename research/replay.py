@@ -81,6 +81,7 @@ TRADE_FIELDS = [
     "hvn_entry_in_zone", "hvn_nearest_atr", "hvn_confluence", "hvn_first_test",
     "ofr_tier", "ofr_signals", "ofr_zone_kind", "ofr_first_test",
     "ofr_absorb_bars_before", "ofr_signal_states", "day_bias", "dev_shape_label",
+    "ofr_visit_number",
     "is_control", "control_of",
 ]
 
@@ -111,7 +112,7 @@ TRADE_FIELD_TYPES = {
     "stop_inside_hvn": int, "target_behind_hvn": int,
     "hvn_entry_in_zone": int, "hvn_nearest_atr": float, "hvn_confluence": int,
     "hvn_first_test": int,
-    "ofr_first_test": int, "ofr_absorb_bars_before": int,
+    "ofr_first_test": int, "ofr_absorb_bars_before": int, "ofr_visit_number": int,
     "tp2_price": float, "atr15": float,
     "is_control": int,
 }
@@ -306,6 +307,7 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
         "ofr_first_test": attributes.get("ofr_first_test"),
         "ofr_absorb_bars_before": attributes.get("ofr_absorb_bars_before"),
         "ofr_signal_states": attributes.get("ofr_signal_states"),
+        "ofr_visit_number": attributes.get("ofr_visit_number"),
         "day_bias": attributes.get("day_bias"),
         "dev_shape_label": attributes.get("dev_shape_label"),
         # Blank for every setup except S3-BRK, which is the only one with more than one

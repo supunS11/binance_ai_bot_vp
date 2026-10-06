@@ -227,11 +227,20 @@ class DetectTests(unittest.TestCase):
         self.assertIn("FLIP", result.attributes["ofr_signals"])
         self.assertLess(result.stop_price, 98.95)
 
-    def test_second_visit_to_the_zone_is_ignored(self):
+    def test_second_visit_to_the_zone_is_ignored_under_the_first_visit_rule(self):
         minutes = _buy_setup(extra_visit=True)
-        result = ofr.detect(_ctx(minutes, minutes[-1].close_time))
+        with patch.object(config, "OFR_VISIT_RULE", "first"):
+            result = ofr.detect(_ctx(minutes, minutes[-1].close_time))
         self.assertTrue(result.is_rejection)
         self.assertEqual(result.reason, RejectReason.NOT_FIRST_TEST)
+
+    def test_second_visit_is_eligible_under_the_any_visit_rule(self):
+        minutes = _buy_setup(extra_visit=True)
+        with patch.object(config, "OFR_VISIT_RULE", "any"):
+            result = ofr.detect(_ctx(minutes, minutes[-1].close_time))
+        self.assertIsInstance(result, Candidate)
+        self.assertEqual(result.attributes["ofr_visit_number"], 2)
+        self.assertEqual(result.attributes["ofr_first_test"], 0)
 
     def test_disabled_flag_rejects_without_looking_at_data(self):
         with patch.object(config, "S4_OFR_ENABLED", False):

@@ -223,6 +223,21 @@ OFR_STOP_BUFFER_ATR = env_float("OFR_STOP_BUFFER_ATR", 0.20)
 OFR_TP_MIN_R = env_float("OFR_TP_MIN_R", 1.2)
 OFR_TP_FALLBACK_R = env_float("OFR_TP_FALLBACK_R", 2.0)
 OFR_DEV_SUPPORT_ATR = env_float("OFR_DEV_SUPPORT_ATR", 0.50)
+# Which touches of a zone can trigger S4. "any": every visit this session, each still needing
+# order-flow confirmation - the owner's choice, since true first visits are rare once a
+# previous-day profile is in use. "first": only the zone's first visit (the original rule).
+# T3 and the X exception still require a first visit, whichever rule is set.
+OFR_VISIT_RULE = env_str("OFR_VISIT_RULE", "any").strip().lower()
+
+# STACKED and RESTING from the feed recorder (data/feed_reader.py). OFF until replayed:
+# recording started recently, so there is little history to test against. Thresholds are
+# the starting points proposed in the order-flow plan, fixed before any result is seen.
+OFR_USE_RECORDED_FLOW = env_bool("OFR_USE_RECORDED_FLOW", "False")
+OFR_FLOW_WINDOW_MINUTES = env_int("OFR_FLOW_WINDOW_MINUTES", 10)
+OFR_STACK_RATIO = env_float("OFR_STACK_RATIO", 3.0)
+OFR_STACK_MIN_LEVELS = env_int("OFR_STACK_MIN_LEVELS", 3)
+OFR_RESTING_SIZE_MULT = env_float("OFR_RESTING_SIZE_MULT", 3.0)
+OFR_RESTING_PERSIST = env_float("OFR_RESTING_PERSIST", 0.6)
 # Profile-shape bias for S4: on a BULL or BEAR day, reversals against the bias are refused
 # (see profile/shape.py day_bias). A market opinion, so OFF until replay validates it.
 BIAS_FILTER_ENABLED = env_bool("BIAS_FILTER_ENABLED", "False")

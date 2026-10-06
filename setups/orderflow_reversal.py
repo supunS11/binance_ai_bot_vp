@@ -22,6 +22,7 @@ higher. The target is the first level in the plan's priority ladder that clears 
 from dataclasses import dataclass
 
 import config
+from data import feed_reader
 from data import klines as klines_mod
 from profile import shape as shape_mod
 from profile.va_hvn import touch_count
@@ -132,6 +133,27 @@ def _invalidated(bars, zone, side, atr):
     return beyond and buying
 
 
+def _recorded_flow(ctx, zone, side):
+    """STACKED and RESTING from the feed recorder. True or False when the recorder covered the
+    window, None when it did not - and None is UNAVAILABLE, never a quiet market."""
+    if not config.OFR_USE_RECORDED_FLOW:
+        return {}
+    flow = {"STACKED": None, "RESTING": None}
+    end = ctx.as_of
+    start = end - config.OFR_FLOW_WINDOW_MINUTES * 60_000
+    tick = float(getattr(ctx.spec, "tick_size", 0) or 0)
+    levels = feed_reader.trade_levels(config.FEED_OUT_DIR, ctx.symbol, start, end)
+    if levels is not None and tick > 0:
+        flow["STACKED"] = feed_reader.stacked_imbalance(
+            levels, side, tick, config.OFR_STACK_RATIO, config.OFR_STACK_MIN_LEVELS)
+    samples = feed_reader.depth_samples(config.FEED_OUT_DIR, ctx.symbol, start, end)
+    if samples is not None:
+        flow["RESTING"] = feed_reader.resting_large_orders(
+            samples, side, zone.low, zone.high, config.OFR_RESTING_SIZE_MULT,
+            config.OFR_RESTING_PERSIST)
+    return flow
+
+
 def classify_tier(present, zone_kind, first_test, dev_supported, exceptional_follow):
     """Plan tiers. `present` is the set of signal names that fired (UNAVAILABLE never does)."""
     supporting = present & {"FLIP", "STACKED", "RESTING"}
@@ -178,7 +200,9 @@ def detect(ctx):
 
     rejected = []
     for zone in arrived:
-        if touch_count(closed, zone.low, zone.high) != 1:
+        visits = touch_count(closed, zone.low, zone.high)
+        first_test = visits == 1
+        if config.OFR_VISIT_RULE == "first" and not first_test:
             rejected.append("NOT_FIRST_TEST")
             continue
         side = "BUY" if zone.center < last.close else "SELL"
@@ -202,6 +226,9 @@ def detect(ctx):
         if _flip(bars, side):
             present.add("FLIP")
 
+        flow = _recorded_flow(ctx, zone, side)
+        present |= {name for name, value in flow.items() if value}
+
         follow = _follow_through(last, zone, side, ctx.atr, config.OFR_FOLLOW_ATR)
         exceptional = _follow_through(last, zone, side, ctx.atr,
                                       config.OFR_EXCEPTIONAL_FOLLOW_ATR)
@@ -215,12 +242,13 @@ def detect(ctx):
         dev = ctx.dev_levels
         dev_supported = (dev is not None and
                          abs(dev.poc_price - zone.center) <= config.OFR_DEV_SUPPORT_ATR * ctx.atr)
-        tier = classify_tier(present, zone.kind, True, dev_supported, exceptional)
+        tier = classify_tier(present, zone.kind, first_test, dev_supported, exceptional)
         if tier is None:
             rejected.append("TIER_NOT_MET")
             continue
 
-        result = _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15)
+        result = _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15,
+                            first_test, visits, flow)
         if result.is_rejection:
             rejected.append(result.reason.value)
             continue
@@ -264,7 +292,8 @@ def _target_ladder(entry, side, risk, levels, naked_pocs, hvns, prior_extreme):
     return tp1, tp2
 
 
-def _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15):
+def _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15, first_test, visits,
+               flow):
     last = bars[-1]
     cluster = bars[absorb_index] if absorb_index is not None else last
     entry_buffer = config.OFR_ENTRY_BUFFER_ATR * atr15
@@ -297,8 +326,9 @@ def _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15):
         entry, side, risk, levels, ctx.naked_pocs, levels.hvns, prior_extreme)
 
     signals = {name: (name in present) for name in ("ABS", "CVD", "FLIP")}
-    signals["STACKED"] = UNAVAILABLE
-    signals["RESTING"] = UNAVAILABLE
+    for name in ("STACKED", "RESTING"):
+        value = flow.get(name)
+        signals[name] = UNAVAILABLE if value is None else value
     signal_text = "+".join(sorted(present))
 
     return Candidate(
@@ -323,7 +353,8 @@ def _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15):
             "ofr_tier": tier,
             "ofr_signals": signal_text,
             "ofr_zone_kind": zone.kind,
-            "ofr_first_test": 1,
+            "ofr_first_test": 1 if first_test else 0,
+            "ofr_visit_number": visits,
             "ofr_absorb_bars_before": (len(bars) - 1 - absorb_index) if absorb_index is not None
             else None,
             "ofr_signal_states": ";".join(f"{k}={v}" for k, v in sorted(signals.items())),
