@@ -76,7 +76,7 @@ class FieldTypeCoverageTests(unittest.TestCase):
             "prior_shape", "auction_state", "open_relationship", "target_kind",
             "target_candidates", "ofr_tier", "ofr_signals", "ofr_zone_kind",
             "ofr_signal_states", "entry_mode", "confirmations", "control_of", "value_migration",
-            "stop_mode", "stop_reference", "tp2_kind",
+            "stop_mode", "stop_reference", "tp2_kind", "day_bias", "dev_shape_label",
         }
         unclassified = set(replay.TRADE_FIELDS) - set(replay.TRADE_FIELD_TYPES) - strings
         self.assertEqual(

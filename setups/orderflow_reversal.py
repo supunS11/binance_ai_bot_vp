@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 import config
 from data import klines as klines_mod
+from profile import shape as shape_mod
 from profile.va_hvn import touch_count
 from setups.base import (Candidate, RejectReason, SetupState, reject,
                          target_candidates)
@@ -182,6 +183,12 @@ def detect(ctx):
             continue
         side = "BUY" if zone.center < last.close else "SELL"
 
+        bias = shape_mod.day_bias(ctx.prior_shape)
+        if config.BIAS_FILTER_ENABLED and (
+                (bias == "BULL" and side == "SELL") or (bias == "BEAR" and side == "BUY")):
+            rejected.append("BIAS_OPPOSED")
+            continue
+
         if _invalidated(bars, zone, side, ctx.atr):
             rejected.append("INVALIDATED")
             continue
@@ -320,6 +327,8 @@ def _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15):
             "ofr_absorb_bars_before": (len(bars) - 1 - absorb_index) if absorb_index is not None
             else None,
             "ofr_signal_states": ";".join(f"{k}={v}" for k, v in sorted(signals.items())),
+            "day_bias": shape_mod.day_bias(ctx.prior_shape),
+            "dev_shape_label": ctx.dev_shape.label if ctx.dev_shape is not None else None,
             "target_candidates": target_candidates(
                 entry, side, levels, naked_pocs=ctx.naked_pocs, hvns=levels.hvns,
                 prior_extreme=prior_extreme),

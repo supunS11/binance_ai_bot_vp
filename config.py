@@ -223,6 +223,9 @@ OFR_STOP_BUFFER_ATR = env_float("OFR_STOP_BUFFER_ATR", 0.20)
 OFR_TP_MIN_R = env_float("OFR_TP_MIN_R", 1.2)
 OFR_TP_FALLBACK_R = env_float("OFR_TP_FALLBACK_R", 2.0)
 OFR_DEV_SUPPORT_ATR = env_float("OFR_DEV_SUPPORT_ATR", 0.50)
+# Profile-shape bias for S4: on a BULL or BEAR day, reversals against the bias are refused
+# (see profile/shape.py day_bias). A market opinion, so OFF until replay validates it.
+BIAS_FILTER_ENABLED = env_bool("BIAS_FILTER_ENABLED", "False")
 VA_HVN_STABILITY_TOL_BINS = env_float("VA_HVN_STABILITY_TOL_BINS", 1.0)
 HVN_PCT = env_float("HVN_PCT", 0.70)
 LVN_PCT = env_float("LVN_PCT", 0.35)

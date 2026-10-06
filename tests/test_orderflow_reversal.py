@@ -37,7 +37,8 @@ def _ctx(minutes, last_close_time):
     return SimpleNamespace(
         symbol="TESTUSDT", session_id="2026-01-01", as_of=last_close_time, atr=1.0,
         session_candles=tuple(minutes), prior_levels=_Levels(), prior_profile=_Profile(),
-        naked_pocs=(), dev_levels=None, profile_row=lambda: {},
+        naked_pocs=(), dev_levels=None, dev_shape=None, prior_shape=None,
+        profile_row=lambda: {},
     )
 
 
@@ -111,6 +112,51 @@ def _node(price, is_poc=False):
 
 def _levels(poc, vah, val, hvns=()):
     return SimpleNamespace(poc_price=poc, vah=vah, val=val, hvns=list(hvns))
+
+
+def _shape(label, migration=None):
+    return SimpleNamespace(label=label, intra_poc_migration_atr=migration)
+
+
+class DayBiasTests(unittest.TestCase):
+    def setUp(self):
+        self.patch = patch.object(config, "S4_OFR_ENABLED", True)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def test_bear_day_refuses_a_buy_when_the_filter_is_on(self):
+        minutes = _buy_setup()
+        ctx = _ctx(minutes, minutes[-1].close_time)
+        ctx.prior_shape = _shape("b")
+        with patch.object(config, "BIAS_FILTER_ENABLED", True):
+            result = ofr.detect(ctx)
+        self.assertTrue(result.is_rejection)
+        self.assertIn("BIAS_OPPOSED", result.detail)
+
+    def test_the_same_setup_is_taken_when_the_filter_is_off(self):
+        minutes = _buy_setup()
+        ctx = _ctx(minutes, minutes[-1].close_time)
+        ctx.prior_shape = _shape("b")
+        with patch.object(config, "BIAS_FILTER_ENABLED", False):
+            self.assertIsInstance(ofr.detect(ctx), Candidate)
+
+    def test_a_bull_day_allows_the_buy_and_records_the_bias(self):
+        minutes = _buy_setup()
+        ctx = _ctx(minutes, minutes[-1].close_time)
+        ctx.prior_shape = _shape("P")
+        with patch.object(config, "BIAS_FILTER_ENABLED", True):
+            result = ofr.detect(ctx)
+        self.assertIsInstance(result, Candidate)
+        self.assertEqual(result.attributes["day_bias"], "BULL")
+
+    def test_a_neutral_day_allows_both_directions(self):
+        minutes = _buy_setup()
+        ctx = _ctx(minutes, minutes[-1].close_time)
+        ctx.prior_shape = _shape("D")
+        with patch.object(config, "BIAS_FILTER_ENABLED", True):
+            self.assertIsInstance(ofr.detect(ctx), Candidate)
 
 
 class TargetLadderTests(unittest.TestCase):

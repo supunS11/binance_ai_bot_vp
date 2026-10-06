@@ -320,3 +320,25 @@ def classify(profile, levels, intra_poc_migration_atr=None):
         poor_low=poor_low,
         single_print_bins=_single_prints(profile, levels),
     )
+
+
+def day_bias(shape):
+    """Directional bias from the previous day's profile shape.
+
+    P gives BULL and b gives BEAR; D gives NEUTRAL. Trend (thin or elongated) and double
+    distribution days take their direction from the intra-session POC migration, the one
+    measure here of where value travelled. When that is unmeasured or zero they are NEUTRAL,
+    never guessed. None means there is no shape to read.
+    """
+    if shape is None:
+        return None
+    if shape.label == "P":
+        return "BULL"
+    if shape.label == "b":
+        return "BEAR"
+    if shape.label == "D":
+        return "NEUTRAL"
+    migration = shape.intra_poc_migration_atr
+    if not migration:
+        return "NEUTRAL"
+    return "BULL" if migration > 0 else "BEAR"

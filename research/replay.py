@@ -52,6 +52,7 @@ from gates import profiles as gate_profiles
 from research import dataset, metrics
 from research.historical import HistoricalCache, StaticCatalog
 from scanner import Scanner
+from setups import orderflow_reversal
 from state_machine import StateMachine
 
 log = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ TRADE_FIELDS = [
     "stop_inside_hvn", "target_behind_hvn",
     "hvn_entry_in_zone", "hvn_nearest_atr", "hvn_confluence", "hvn_first_test",
     "ofr_tier", "ofr_signals", "ofr_zone_kind", "ofr_first_test",
-    "ofr_absorb_bars_before", "ofr_signal_states",
+    "ofr_absorb_bars_before", "ofr_signal_states", "day_bias", "dev_shape_label",
     "is_control", "control_of",
 ]
 
@@ -305,6 +306,8 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
         "ofr_first_test": attributes.get("ofr_first_test"),
         "ofr_absorb_bars_before": attributes.get("ofr_absorb_bars_before"),
         "ofr_signal_states": attributes.get("ofr_signal_states"),
+        "day_bias": attributes.get("day_bias"),
+        "dev_shape_label": attributes.get("dev_shape_label"),
         # Blank for every setup except S3-BRK, which is the only one with more than one
         # entry rule right now. Present unconditionally, like baseline_source and
         # target_kind, so a future setup with its own mode switch has somewhere to
@@ -351,6 +354,28 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
     }
 
 
+S4_PRECHECK_MINUTES = 30
+
+
+def _s4_zone_near(scanner, cache, symbol, session_id, step):
+    """Whether price has touched any S4 zone in the last S4_PRECHECK_MINUTES.
+
+    Exact for S4: the detector rejects a minute as NO_ORDER_FLOW_ZONE unless a zone was
+    touched in its last four 5-minute bars, which lie inside this wider window. A minute
+    with no touch here cannot produce a candidate, so the expensive context build can be
+    skipped for it. Any doubt (no bundle, no candles) keeps the minute for the full path.
+    """
+    bundle, _reason = scanner.frozen_bundle(symbol, session_id, step)
+    if bundle is None:
+        return True
+    recent = [c for c in cache.minute_candles(symbol, step - S4_PRECHECK_MINUTES * 60_000, step)
+              if c.close_time <= step]
+    if not recent:
+        return True
+    zones = orderflow_reversal._zones(bundle.levels, bundle.atr)
+    return any(c.low <= z.high and c.high >= z.low for c in recent for z in zones)
+
+
 def replay_symbol(scanner, cache, catalog, symbol, qv_rank, session_ids,
                   portfolio, apply_gates=True, only_setup=None, step_ms=None):
     """Replay every session for one symbol. Returns (trade rows, reject tally)."""
@@ -374,6 +399,11 @@ def replay_symbol(scanner, cache, catalog, symbol, qv_rank, session_ids,
         step = session_start + decision_ms
         while step <= session_end:
             cache.set_as_of(step)
+            if only_setup == "S4-OFR" and not _s4_zone_near(scanner, cache, symbol,
+                                                           session_id, step):
+                rejects["NO_ORDER_FLOW_ZONE"] = rejects.get("NO_ORDER_FLOW_ZONE", 0) + 1
+                step += decision_ms
+                continue
             try:
                 ctx, reason = scanner.build_context(symbol, as_of=step)
             except Exception as exc:                    # noqa: BLE001
