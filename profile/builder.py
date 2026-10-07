@@ -34,6 +34,7 @@ so each is stated explicitly rather than left as an implementation detail.
 Signed taker delta is accumulated with exactly the same spreading, giving a
 per-bin buy/sell imbalance for free - see data/klines.Candle.delta_base.
 """
+import copy
 import logging
 import math
 from dataclasses import dataclass, field
@@ -235,18 +236,28 @@ def build(symbol, candles, window_start, window_end, as_of, bin_size,
         if window_start <= candle.open_time < window_end
         and candle.close_time <= as_of
     ]
+    key = (symbol.upper(), int(window_start), int(window_end), float(bin_size),
+           source_interval or config.PROFILE_SOURCE_INTERVAL, distribution, coverage)
+    profile, consumed = _resume(key, usable, as_of)
+    if profile is None:
+        profile, consumed = _fresh(symbol, window_start, window_end, as_of, bin_size,
+                                   source_interval, distribution, coverage), 0
     if not usable:
         return profile
 
     spread = _assign_at_close if distribution == "close" else _spread_candle
 
-    profile.open = usable[0].open
-    profile.close = usable[-1].close
-    profile.high = max(candle.high for candle in usable)
-    profile.low = min(candle.low for candle in usable)
-    profile.candle_count = len(usable)
+    for position in range(consumed, len(usable)):
+        candle = usable[position]
+        if position == 0:
+            profile.open = candle.open
+            profile.high = candle.high
+            profile.low = candle.low
+        else:
+            profile.high = max(profile.high, candle.high)
+            profile.low = min(profile.low, candle.low)
+        profile.close = candle.close
 
-    for candle in usable:
         weights = spread(profile, candle)
         for index, weight in weights.items():
             if weight <= 0:
@@ -260,6 +271,9 @@ def build(symbol, candles, window_start, window_end, as_of, bin_size,
         profile.total_quote_volume += candle.quote_volume
         profile.total_trades += candle.trades
 
+    profile.candle_count = len(usable)
+    _remember(key, profile, usable)
+
     if profile.bin_count > config.BIN_MAX_COUNT:
         log.warning("%s profile has %s bins (cap %s) - bin_size %.10g may be "
                     "too fine for this symbol's range",
@@ -267,6 +281,67 @@ def build(symbol, candles, window_start, window_end, as_of, bin_size,
                     profile.bin_size)
 
     return profile
+
+
+# THE INCREMENTAL CACHE. A developing profile is rebuilt at every decision step, and a full
+# rebuild costs the whole session's candles each time, so a day's replay is quadratic. The
+# cache keeps the last accumulated profile per (symbol, window, bin geometry, settings) and
+# folds in only the candles that closed since. Candles are folded in the same order a full
+# build uses, so the result is bit-identical to a rebuild; a test asserts that. A cached
+# state is used only when the candles still begin with the ones already folded in.
+_INCREMENTAL = {}
+_INCREMENTAL_LIMIT = 512
+
+
+def _fresh(symbol, window_start, window_end, as_of, bin_size, source_interval,
+           distribution, coverage):
+    return Profile(
+        symbol=symbol.upper(),
+        window_start=int(window_start),
+        window_end=int(window_end),
+        as_of=int(as_of),
+        bin_size=float(bin_size),
+        source_interval=source_interval or config.PROFILE_SOURCE_INTERVAL,
+        distribution=distribution,
+        coverage=coverage,
+    )
+
+
+def _clone(profile, as_of):
+    clone = copy.copy(profile)
+    clone.as_of = int(as_of)
+    clone.volume = dict(profile.volume)
+    clone.delta = dict(profile.delta)
+    clone.quote = dict(profile.quote)
+    clone.trades = dict(profile.trades)
+    return clone
+
+
+def _prefix_digest(candles):
+    return hash(tuple((c.open_time, c.close_time, c.open, c.high, c.low, c.close,
+                       c.volume, c.quote_volume, c.trades, c.taker_buy_base)
+                      for c in candles))
+
+
+def _resume(key, usable, as_of):
+    """A copy of the cached profile holding the first `count` usable candles, plus that
+    count, or (None, 0) when the candles no longer begin with the ones already folded in."""
+    cached = _INCREMENTAL.get(key)
+    if cached is None:
+        return None, 0
+    count = cached["count"]
+    if not (0 < count <= len(usable)):
+        return None, 0
+    if _prefix_digest(usable[:count]) != cached["digest"]:
+        return None, 0
+    return _clone(cached["profile"], as_of), count
+
+
+def _remember(key, profile, usable):
+    if len(_INCREMENTAL) >= _INCREMENTAL_LIMIT:
+        _INCREMENTAL.clear()
+    _INCREMENTAL[key] = {"profile": _clone(profile, profile.as_of), "count": len(usable),
+                         "digest": _prefix_digest(usable)}
 
 
 def profile_as_of(symbol, candles, window_start, window_end, as_of, bin_size,
