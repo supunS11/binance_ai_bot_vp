@@ -55,6 +55,7 @@ import uuid
 import config
 from exchange import filters
 from exchange.rest import ApiError
+from setups.base import MARKET_ENTRY
 
 log = logging.getLogger(__name__)
 
@@ -201,6 +202,8 @@ class OrderRouter:
         to the entry, so a better entry improves R rather than moving the point at
         which the idea is wrong.
         """
+        if candidate.attributes.get("entry_mode") == MARKET_ENTRY:
+            return candidate.entry_price
         price = passive_entry_price(candidate.entry_price, book,
                                    candidate.direction, spec)
         candidate.entry_price = float(price)
@@ -209,20 +212,29 @@ class OrderRouter:
     def place_entry(self, candidate, book):
         """Post the entry order. Returns (order, None) or (None, reason).
 
+        A MARKET entry (zone watch) is sent at the current price, so its reference price is
+        not improved against the book and its quantity uses the MARKET lot-size filter.
+
         Expects `candidate.entry_price` to already be the resolved passive price and
         `candidate.quantity` to have been sized from it - see resolve_entry_price.
         Calling this without that ordering still works, but sizes against the
         reference price rather than the placed one.
         """
         spec = self._catalog.require(candidate.symbol)
+        market = candidate.attributes.get("entry_mode") == MARKET_ENTRY
 
-        price = passive_entry_price(candidate.entry_price, book,
-                                   candidate.direction, spec)
-        quantity = filters.round_quantity(candidate.quantity, spec.step_size)
+        if market:
+            price = candidate.entry_price
+            quantity = filters.round_quantity(candidate.quantity, spec.market_step_size)
+        else:
+            price = passive_entry_price(candidate.entry_price, book,
+                                       candidate.direction, spec)
+            quantity = filters.round_quantity(candidate.quantity, spec.step_size)
 
         try:
-            filters.check_price(price, spec)
-            filters.check_quantity(quantity, spec)
+            if not market:
+                filters.check_price(price, spec)
+            filters.check_quantity(quantity, spec, market_order=market)
             filters.check_notional(price, quantity, spec)
         except filters.FilterRejection as exc:
             return None, f"{exc.code}: {exc.detail}"
@@ -233,11 +245,11 @@ class OrderRouter:
         params = {
             "symbol": candidate.symbol,
             "side": candidate.direction,
-            "type": config.ENTRY_ORDER_TYPE,
+            "type": "MARKET" if market else config.ENTRY_ORDER_TYPE,
             "quantity": filters.quantity_str(quantity, spec),
             "newClientOrderId": candidate.client_order_id,
         }
-        if config.ENTRY_ORDER_TYPE == "LIMIT":
+        if not market and config.ENTRY_ORDER_TYPE == "LIMIT":
             params["price"] = filters.price_str(price, spec)
             params["timeInForce"] = config.ENTRY_TIME_IN_FORCE
 

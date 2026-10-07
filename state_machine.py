@@ -253,6 +253,25 @@ class StateMachine:
         rejections.extend(suppressed)
         return winner, rejections
 
+    def admission(self, ctx, setup):
+        """The refusal a setup would meet in evaluate(), or None when it may be detected.
+
+        For setups that are driven outside evaluate() - the zone watch - so they obey the same
+        session eligibility, activation and per-session caps.
+        """
+        state = self.state_for(ctx.symbol, ctx.session_id, ctx.open_relationship)
+        if setup not in state.eligible:
+            return reject(RejectReason.OPEN_RELATIONSHIP_WRONG, setup, ctx.symbol,
+                          detail=(f"not eligible under open={state.open_relationship} "
+                                  f"(eligible: {','.join(state.eligible)})"))
+        if setup not in config.ACTIVE_SETUPS:
+            return reject(RejectReason.SETUP_DISABLED, setup, ctx.symbol,
+                          detail="not in ACTIVE_SETUPS")
+        allowed, why = state.can_take(setup)
+        if not allowed:
+            return reject(RejectReason.SESSION_SETUP_LIMIT, setup, ctx.symbol, detail=why)
+        return None
+
     @staticmethod
     def _zone_claimed_by_s4(state, candidate, this_tick):
         """S4-OFR has priority on a shared zone: S2-VAR is refused where S4 traded or fired."""

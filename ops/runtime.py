@@ -106,6 +106,13 @@ class StateStore:
     );
     """
 
+    _WATCH_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS zone_watch_state (
+        symbol   TEXT PRIMARY KEY,
+        payload  TEXT NOT NULL
+    );
+    """
+
     def __init__(self, path=None):
         self._path = path or config.DB_PATH
         self._lock = threading.RLock()
@@ -113,7 +120,25 @@ class StateStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(self._SCHEMA)
+            self._conn.executescript(self._WATCH_SCHEMA)
             self._conn.commit()
+
+    def save_zone_watch(self, symbol, payload):
+        """Replace one symbol's zone-watch state. A None payload clears it."""
+        with self._lock:
+            if payload is None:
+                self._conn.execute("DELETE FROM zone_watch_state WHERE symbol=?",
+                                   (symbol.upper(),))
+            else:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO zone_watch_state (symbol, payload) VALUES (?,?)",
+                    (symbol.upper(), payload))
+            self._conn.commit()
+
+    def load_zone_watches(self):
+        with self._lock:
+            rows = self._conn.execute("SELECT symbol, payload FROM zone_watch_state").fetchall()
+        return {row["symbol"]: row["payload"] for row in rows}
 
     def save_position(self, managed):
         import json

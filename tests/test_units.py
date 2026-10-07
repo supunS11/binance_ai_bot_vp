@@ -30,6 +30,22 @@ from setups import base                                   # noqa: E402
 from setups.base import Candidate, RejectReason           # noqa: E402
 from tests import factories as f                          # noqa: E402
 
+_MARGIN_PIN = None
+
+
+def setUpModule():
+    # RiskSizingTests exercises stop-based sizing specifically; FixedMarginSizingTests
+    # overrides this per-test where it tests the fixed-margin path. Pinned so a live
+    # .env enabling it (as for a small live test) cannot flip these assumptions.
+    global _MARGIN_PIN
+    _MARGIN_PIN = patch.object(config, "FIXED_MARGIN_SIZING_ENABLED", False)
+    _MARGIN_PIN.start()
+
+
+def tearDownModule():
+    _MARGIN_PIN.stop()
+
+
 START = 1_758_844_800_000
 
 
@@ -389,6 +405,61 @@ class RiskSizingTests(unittest.TestCase):
                                   stop_price=99.0, direction="BUY", quantity=1.0)
         self.assertLess(outcome["gross_r"], -1.0)
         self.assertLess(outcome["net_r"], outcome["gross_r"])
+
+
+class FixedMarginSizingTests(unittest.TestCase):
+    """FIXED_MARGIN_SIZING_ENABLED (opt-in, default off): quantity comes from
+    MARGIN_PER_TRADE * LEVERAGE instead of from the stop, bot_ds-style."""
+
+    def setUp(self):
+        self.spec = f.FakeSpec()
+        self.state = risk.PortfolioState(equity=10_000.0, available_balance=10_000.0)
+
+    def _candidate(self, entry, stop, target=102.0):
+        return Candidate(setup="S1-POC", symbol="TESTUSDT", direction="BUY",
+                         entry_price=entry, stop_price=stop, target_price=target)
+
+    def test_quantity_comes_from_margin_times_leverage_not_the_stop(self):
+        candidate = self._candidate(100.0, 99.0)
+        with patch.object(config, "FIXED_MARGIN_SIZING_ENABLED", True), \
+             patch.object(config, "MARGIN_PER_TRADE", 5.0), \
+             patch.object(config, "LEVERAGE", 5):
+            rejection = risk.size(candidate, self.state, self.spec)
+        self.assertIsNone(rejection)
+        self.assertAlmostEqual(candidate.quantity, 0.25, places=6)
+        self.assertAlmostEqual(candidate.notional, 25.0, places=6)
+
+    def test_quantity_does_not_change_when_the_stop_moves(self):
+        """The defining property of this mode: unlike stop-based sizing, the stop
+        distance has no say in quantity at all - only margin and leverage do."""
+        with patch.object(config, "FIXED_MARGIN_SIZING_ENABLED", True), \
+             patch.object(config, "MARGIN_PER_TRADE", 5.0), \
+             patch.object(config, "LEVERAGE", 5):
+            tight = self._candidate(100.0, 99.5)
+            wide = self._candidate(100.0, 90.0)
+            risk.size(tight, self.state, self.spec)
+            risk.size(wide, self.state, self.spec)
+        self.assertAlmostEqual(tight.quantity, wide.quantity, places=6)
+        # but the dollar risk that falls out of it is NOT constant - the whole tradeoff
+        self.assertGreater(wide.risk_amount, tight.risk_amount)
+
+    def test_insufficient_margin_when_available_balance_is_below_the_target(self):
+        state = risk.PortfolioState(equity=10_000.0, available_balance=2.0)
+        candidate = self._candidate(100.0, 99.0)
+        with patch.object(config, "FIXED_MARGIN_SIZING_ENABLED", True), \
+             patch.object(config, "MARGIN_PER_TRADE", 5.0), \
+             patch.object(config, "LEVERAGE", 5):
+            rejection = risk.size(candidate, state, self.spec)
+        self.assertIsNotNone(rejection)
+        self.assertEqual(rejection.reason, RejectReason.INSUFFICIENT_MARGIN)
+
+    def test_zero_margin_per_trade_is_refused(self):
+        candidate = self._candidate(100.0, 99.0)
+        with patch.object(config, "FIXED_MARGIN_SIZING_ENABLED", True), \
+             patch.object(config, "MARGIN_PER_TRADE", 0.0):
+            rejection = risk.size(candidate, self.state, self.spec)
+        self.assertIsNotNone(rejection)
+        self.assertEqual(rejection.reason, RejectReason.INSUFFICIENT_MARGIN)
 
 
 class StructuralTargetTests(unittest.TestCase):

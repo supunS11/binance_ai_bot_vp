@@ -134,8 +134,13 @@ def size(candidate, state, spec, risk_pct=None):
     Returns a Rejection when the position cannot be expressed on this symbol - which
     is a real and frequent outcome on coarse-lot symbols, where flooring to stepSize
     drops the notional under the venue's minimum.
+
+    FIXED_MARGIN_SIZING_ENABLED switches to bot_ds's model: quantity comes from
+    `MARGIN_PER_TRADE * LEVERAGE / entry_price` instead of from the stop, and
+    risk_amount becomes whatever dollar loss that implies at THIS trade's stop
+    distance - informational, no longer the sizing input.
     """
-    risk_pct = config.RISK_PCT if risk_pct is None else risk_pct
+    fixed_margin = config.FIXED_MARGIN_SIZING_ENABLED
 
     risk_distance = candidate.risk_distance
     if risk_distance <= 0:
@@ -146,8 +151,17 @@ def size(candidate, state, spec, risk_pct=None):
                       candidate.symbol, direction=candidate.direction,
                       detail="equity is zero")
 
-    risk_amount = state.equity * float(risk_pct)
-    raw_quantity = risk_amount / risk_distance
+    if fixed_margin:
+        margin_target = max(float(config.MARGIN_PER_TRADE), 0.0)
+        if margin_target <= 0:
+            return reject(RejectReason.INSUFFICIENT_MARGIN, candidate.setup,
+                          candidate.symbol, direction=candidate.direction,
+                          detail="MARGIN_PER_TRADE is zero")
+        raw_quantity = (margin_target * config.LEVERAGE) / candidate.entry_price
+    else:
+        risk_pct = config.RISK_PCT if risk_pct is None else risk_pct
+        risk_amount = state.equity * float(risk_pct)
+        raw_quantity = risk_amount / risk_distance
 
     quantity = filters.round_quantity(raw_quantity, spec.step_size)
     if quantity <= 0:
@@ -177,8 +191,10 @@ def size(candidate, state, spec, risk_pct=None):
 
     # Margin check. Isolated margin at LEVERAGE requires notional/leverage of
     # collateral, plus room for fees. Checked against AVAILABLE balance rather than
-    # equity, because equity includes margin already committed elsewhere.
-    required_margin = notional / max(1, int(config.LEVERAGE))
+    # equity, because equity includes margin already committed elsewhere. Under fixed
+    # sizing the margin IS the target, by construction - no need to recompute it from
+    # notional, which would just be `margin_target` back again up to rounding.
+    required_margin = margin_target if fixed_margin else notional / max(1, int(config.LEVERAGE))
     if state.available_balance > 0 and required_margin > state.available_balance:
         return reject(RejectReason.INSUFFICIENT_MARGIN, candidate.setup,
                       candidate.symbol, direction=candidate.direction,
@@ -188,7 +204,7 @@ def size(candidate, state, spec, risk_pct=None):
 
     candidate.quantity = float(quantity)
     candidate.notional = notional
-    candidate.risk_amount = risk_amount
+    candidate.risk_amount = float(quantity) * risk_distance if fixed_margin else risk_amount
     return None
 
 

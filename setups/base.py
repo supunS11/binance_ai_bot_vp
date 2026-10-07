@@ -178,6 +178,9 @@ def reject(reason, setup, symbol, detail="", direction="", level_price=0.0, **co
                      direction=direction, level_price=level_price, context=context)
 
 
+MARKET_ENTRY = "MARKET"
+
+
 @dataclass
 class Candidate:
     """A tradeable setup: what to trade, where, and every input that justified it.

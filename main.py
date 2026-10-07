@@ -51,8 +51,20 @@ from execution.router import OrderRouter, spread_bps
 from gates import profiles as gate_profiles
 from journal.sinks import Journal
 from ops import runtime
+from setups import orderflow_reversal as ofr
+from setups import zone_watch as zone_watch_mod
 
 log = logging.getLogger(__name__)
+
+
+def _seconds_until_next_cycle(started, now=None):
+    """Next cycle start. With the zone watch on, cycles align to 1-minute candle closes,
+    so a closed candle is processed seconds after it closes, not up to a scan interval later."""
+    now = time.time() if now is None else now
+    if not config.ZONE_WATCH_ENABLED:
+        return max(1.0, config.SCAN_INTERVAL_SECONDS - (now - started))
+    due = (now // 60 + 1) * 60 + config.ZONE_WATCH_CLOSE_DELAY_SECONDS
+    return max(1.0, due - now)
 
 
 class VolumeProfileBot:
@@ -69,6 +81,7 @@ class VolumeProfileBot:
                                           self.journal)
         self.state_machine = state_machine_mod.StateMachine(self.journal)
         self.state_store = runtime.StateStore()
+        self.zone_watch = zone_watch_mod.ZoneWatch(self.state_store)
         self.kill_switch = runtime.KillSwitch()
 
         self._session_id = sessions.session_id(sessions.now_ms())
@@ -96,6 +109,7 @@ class VolumeProfileBot:
 
         self.rest.sync_time()
         self.catalog.refresh(force=True)
+        self.zone_watch.restore()
 
         # Recovery gates trading, not scanning: an unexplained position means stop
         # placing orders, but keeping the profile pipeline running is harmless and
@@ -119,9 +133,7 @@ class VolumeProfileBot:
                 except Exception:                 # noqa: BLE001
                     log.exception("cycle failed - continuing")
 
-                elapsed = time.time() - started
-                sleep_for = max(1.0, config.SCAN_INTERVAL_SECONDS - elapsed)
-                time.sleep(sleep_for)
+                time.sleep(_seconds_until_next_cycle(started))
         except KeyboardInterrupt:
             log.info("interrupted - shutting down")
         finally:
@@ -204,7 +216,10 @@ class VolumeProfileBot:
                 continue
             contexts += 1
 
-            candidate, rejections = self.state_machine.evaluate(ctx)
+            if config.ZONE_WATCH_ENABLED:
+                candidate, rejections = self._watch_step(ctx)
+            else:
+                candidate, rejections = self.state_machine.evaluate(ctx)
 
             if rejections:
                 self.journal.record_rejects(
@@ -224,6 +239,14 @@ class VolumeProfileBot:
                 self.rest, self.journal.stats_today())
 
         return scanned, contexts, found
+
+    def _watch_step(self, ctx):
+        """The zone watch in place of evaluate(). Refusals are journaled as evaluate's are."""
+        refusal = self.state_machine.admission(ctx, ofr.SETUP)
+        if refusal is not None:
+            return None, [refusal]
+        candidate, rejections = self.zone_watch.observe(ctx)
+        return candidate, rejections
 
     def try_open(self, candidate, ctx, portfolio):
         """Gate, size, and place one candidate. Journals every refusal."""

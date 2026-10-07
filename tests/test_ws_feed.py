@@ -80,8 +80,8 @@ class StalenessTests(unittest.TestCase):
 
 
 class FeedDefaultsTests(unittest.TestCase):
-    def test_the_feed_is_off_by_default(self):
-        self.assertFalse(config.WS_ENABLED)
+    def test_the_feed_is_on_by_default(self):
+        self.assertTrue(config.WS_ENABLED)
 
     def test_set_symbols_is_a_noop_for_an_unchanged_set(self):
         feed = KlineFeed(lambda symbol, candle: None)

@@ -81,7 +81,7 @@ TRADE_FIELDS = [
     "hvn_entry_in_zone", "hvn_nearest_atr", "hvn_confluence", "hvn_first_test",
     "ofr_tier", "ofr_signals", "ofr_zone_kind", "ofr_first_test",
     "ofr_absorb_bars_before", "ofr_signal_states", "day_bias", "dev_shape_label",
-    "ofr_visit_number",
+    "ofr_visit_number", "ofr_conviction", "bias_strength",
     "is_control", "control_of",
 ]
 
@@ -113,6 +113,7 @@ TRADE_FIELD_TYPES = {
     "hvn_entry_in_zone": int, "hvn_nearest_atr": float, "hvn_confluence": int,
     "hvn_first_test": int,
     "ofr_first_test": int, "ofr_absorb_bars_before": int, "ofr_visit_number": int,
+    "ofr_conviction": int, "bias_strength": int,
     "tp2_price": float, "atr15": float,
     "is_control": int,
 }
@@ -147,8 +148,11 @@ def coerce_row(row):
 
 # --------------------------------------------------------------- simulation
 
-def simulate(candidate, forward, spec=None):
+def simulate(candidate, forward, spec=None, market_fill=False):
     """First-touch outcome for one candidate against forward 1m candles.
+
+    With `market_fill`, the entry is taken at the first forward candle's open and needs no
+    trade-through: a market order fills at the next minute, not at a level.
 
     Returns a dict. `outcome` is one of:
         EXPIRED      never filled inside the fill window
@@ -160,6 +164,8 @@ def simulate(candidate, forward, spec=None):
     """
     direction = candidate.direction
     entry = float(candidate.entry_price)
+    if market_fill and forward:
+        entry = float(forward[0].open)
     stop = float(candidate.stop_price)
     target = float(candidate.target_price)
     risk_distance = abs(entry - stop)
@@ -178,7 +184,12 @@ def simulate(candidate, forward, spec=None):
     hold_deadline_ms = None
 
     filled_at = None
+    if market_fill:
+        filled_at = 0
+        hold_deadline_ms = forward[0].open_time + MAX_HOLD_BARS * confirm_ms
     for index, candle in enumerate(forward):
+        if filled_at is not None:
+            break
         if candle.open_time >= fill_deadline_ms:
             return blank
         # A passive entry fills only if price TRADES THROUGH it. A buy resting at
@@ -308,7 +319,9 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
         "ofr_absorb_bars_before": attributes.get("ofr_absorb_bars_before"),
         "ofr_signal_states": attributes.get("ofr_signal_states"),
         "ofr_visit_number": attributes.get("ofr_visit_number"),
+        "ofr_conviction": attributes.get("ofr_conviction"),
         "day_bias": attributes.get("day_bias"),
+        "bias_strength": attributes.get("bias_strength"),
         "dev_shape_label": attributes.get("dev_shape_label"),
         # Blank for every setup except S3-BRK, which is the only one with more than one
         # entry rule right now. Present unconditionally, like baseline_source and

@@ -7,6 +7,21 @@ from data.klines import Candle
 from setups import orderflow_reversal as ofr
 from setups.base import Candidate, RejectReason
 
+_FLOW_PIN = None
+
+
+def setUpModule():
+    # Fixtures carry no instrument spec, so the recorded-flow path stays off here; it is tested
+    # on its own in test_feed_reader.py.
+    global _FLOW_PIN
+    _FLOW_PIN = patch.object(config, "OFR_USE_RECORDED_FLOW", False)
+    _FLOW_PIN.start()
+
+
+def tearDownModule():
+    _FLOW_PIN.stop()
+
+
 MIN = 60_000
 T0 = 1_700_000_000_000 - (1_700_000_000_000 % (24 * 60 * MIN))
 
@@ -157,6 +172,37 @@ class DayBiasTests(unittest.TestCase):
         ctx.prior_shape = _shape("D")
         with patch.object(config, "BIAS_FILTER_ENABLED", True):
             self.assertIsInstance(ofr.detect(ctx), Candidate)
+
+
+class ApproachAndStructureTests(unittest.TestCase):
+    def _bars(self, away, touching):
+        """`away` bars outside the zone, then `touching` bars inside it."""
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        out = [SimpleNamespace(low=100.0 + i, high=100.2 + i, close=100.1 + i,
+                               close_time=i) for i in range(away)]
+        inside = [SimpleNamespace(low=99.0, high=99.2, close=99.1, close_time=away + i)
+                 for i in range(touching)]
+        return zone, out + inside
+
+    def test_approach_leg_excludes_the_bars_sitting_at_the_zone(self):
+        zone, bars = self._bars(away=5, touching=3)
+        leg = ofr.approach_leg(bars, zone, max_bars=12)
+        self.assertEqual(len(leg), 5)
+        self.assertTrue(all(bar.close_time < 5 for bar in leg))
+
+    def test_approach_leg_is_capped(self):
+        zone, bars = self._bars(away=20, touching=1)
+        leg = ofr.approach_leg(bars, zone, max_bars=12)
+        self.assertEqual(len(leg), 12)
+
+    def test_structure_break_is_the_base_extreme_on_the_trade_side(self):
+        zone, bars = self._bars(away=2, touching=0)
+        base = [SimpleNamespace(low=99.0, high=99.2, close=99.1),
+                SimpleNamespace(low=98.9, high=99.4, close=99.0),
+                SimpleNamespace(low=99.0, high=99.1, close=99.05)]
+        self.assertEqual(ofr.structure_break(base, zone, "BUY", 0), 99.4)
+        self.assertEqual(ofr.structure_break(base, zone, "SELL", 0), 98.9)
+        self.assertEqual(ofr.structure_break(base, zone, "BUY", 1), 99.4)
 
 
 class TargetLadderTests(unittest.TestCase):

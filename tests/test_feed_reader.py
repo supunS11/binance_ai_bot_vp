@@ -14,18 +14,24 @@ T0 = 1_700_000_000_000 - (1_700_000_000_000 % (24 * 60 * MIN))
 class StackedImbalanceTests(unittest.TestCase):
     def test_three_adjacent_buy_dominant_levels_stack(self):
         levels = {"100.0": [9.0, 1.0], "100.1": [8.0, 2.0], "100.2": [7.0, 2.0], "100.3": [1.0, 1.0]}
-        self.assertTrue(fr.stacked_imbalance(levels, "BUY", 0.1, 3.0, 3))
+        self.assertTrue(fr.stacked_imbalance(levels, "BUY", 0.1, 3.0, 3, 99.9, 100.3))
 
     def test_a_gap_in_price_breaks_the_run(self):
         levels = {"100.0": [9.0, 1.0], "100.1": [8.0, 2.0], "100.3": [7.0, 2.0]}
-        self.assertFalse(fr.stacked_imbalance(levels, "BUY", 0.1, 3.0, 3))
+        self.assertFalse(fr.stacked_imbalance(levels, "BUY", 0.1, 3.0, 3, 99.9, 100.3))
 
     def test_sell_side_needs_sell_dominance(self):
         levels = {"100.0": [9.0, 1.0], "100.1": [8.0, 2.0], "100.2": [7.0, 2.0]}
-        self.assertFalse(fr.stacked_imbalance(levels, "SELL", 0.1, 3.0, 3))
+        self.assertFalse(fr.stacked_imbalance(levels, "SELL", 0.1, 3.0, 3, 99.9, 100.3))
 
     def test_no_tick_size_is_not_a_measurement(self):
-        self.assertFalse(fr.stacked_imbalance({"1": [9, 1]}, "BUY", 0.0, 3.0, 3))
+        self.assertFalse(fr.stacked_imbalance({"1": [9, 1]}, "BUY", 0.0, 3.0, 3, 0.0, 2.0))
+
+    def test_a_real_stack_outside_the_zone_band_does_not_count(self):
+        # Same run as the first test, but the zone is elsewhere. A stack is a statement
+        # about THIS level, not about whether aggressive trading happened somewhere nearby.
+        levels = {"100.0": [9.0, 1.0], "100.1": [8.0, 2.0], "100.2": [7.0, 2.0]}
+        self.assertFalse(fr.stacked_imbalance(levels, "BUY", 0.1, 3.0, 3, 95.0, 95.5))
 
 
 class RestingOrderTests(unittest.TestCase):
@@ -76,6 +82,16 @@ class CoverageTests(unittest.TestCase):
                                {"m": T0 + MIN, "lv": {"1": [3, 0]}}])
         self.assertEqual(fr.trade_levels(self.root, "BTCUSDT", T0, T0 + 2 * MIN),
                          {"1": [4.0, 2.0]})
+
+    def test_trade_minutes_keeps_the_minute_boundary(self):
+        self._write("trades", [{"m": T0, "lv": {"1": [1, 2]}},
+                               {"m": T0 + MIN, "lv": {"1": [3, 0]}}])
+        self.assertEqual(fr.trade_minutes(self.root, "BTCUSDT", T0, T0 + 2 * MIN),
+                         [{"m": T0, "lv": {"1": [1, 2]}}, {"m": T0 + MIN, "lv": {"1": [3, 0]}}])
+
+    def test_trade_minutes_is_none_when_not_covered(self):
+        self._write("trades", [{"m": T0 + 10 * MIN, "lv": {"1": [1, 0]}}])
+        self.assertIsNone(fr.trade_minutes(self.root, "BTCUSDT", T0, T0 + 5 * MIN))
 
 
 if __name__ == "__main__":

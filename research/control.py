@@ -120,9 +120,14 @@ def twins_for(cache, row, count, rng):
 
         forward = cache.forward_candles(
             symbol, bar.close_time + 1,
-            bar.close_time + (replay_mod.MAX_HOLD_BARS
-                              + replay_mod.FILL_WINDOW_BARS + 2) * confirm_ms)
-        outcome = replay_mod.simulate(twin, forward)
+            bar.close_time + replay_mod.MAX_HOLD_BARS * confirm_ms
+            + config.ENTRY_TIMEOUT_SECONDS * 1000 + 2 * confirm_ms)
+        # Match the real trade's own fill mechanics: a zone-watch entry fills at market
+        # (see research/zone_watch_replay.py), everything else fills on a trade-through
+        # of a resting price. A twin must share whichever one produced its treatment row,
+        # or a fill-mechanics difference would show up as lift that isn't really there.
+        outcome = replay_mod.simulate(twin, forward,
+                                      market_fill=row.get("entry_mode") == "MARKET")
 
         out.append({
             "symbol": symbol,

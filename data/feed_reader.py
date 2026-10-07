@@ -74,17 +74,36 @@ def depth_samples(root, symbol, start_ms, end_ms):
     return samples
 
 
-def stacked_imbalance(levels, side, tick, ratio, min_levels):
-    """True when `min_levels` or more adjacent price levels each show aggression in the
-    reversal direction at `ratio` to one. Buy aggression for a BUY, sell aggression for a SELL."""
+def trade_minutes(root, symbol, start_ms, end_ms):
+    """Per-minute trade records in the window, or None when it is not covered.
+
+    Unlike trade_levels(), the minute boundary is kept - a heatmap's time axis needs it,
+    whereas trade_levels() exists to answer the single STACKED question over a whole window.
+    """
+    records, gaps, earliest = _read(root, "trades", symbol, start_ms, end_ms)
+    if not _covered(start_ms, end_ms, gaps, earliest):
+        return None
+    return records
+
+
+def stacked_imbalance(levels, side, tick, ratio, min_levels, zone_low, zone_high):
+    """True when `min_levels` or more adjacent price levels, ALL inside [zone_low, zone_high],
+    each show aggression in the reversal direction at `ratio` to one.
+
+    The zone bounds are not optional: a stack is a statement about THIS level, not about
+    whether aggressive trading happened somewhere nearby. A run outside the zone band is
+    not a confirmation of it, however large.
+    """
     if not levels or tick <= 0:
         return False
     run, previous = 0, None
     for price in sorted(levels, key=float):
         p = float(price)
         buy, sell = levels[price]
-        dominant = (buy > 0 and buy >= ratio * sell) if side == "BUY" \
-            else (sell > 0 and sell >= ratio * buy)
+        in_zone = zone_low <= p <= zone_high
+        dominant = in_zone and (
+            (buy > 0 and buy >= ratio * sell) if side == "BUY"
+            else (sell > 0 and sell >= ratio * buy))
         adjacent = previous is not None and abs(p - previous - tick) <= tick * 1e-6
         run = (run + 1 if adjacent else 1) if dominant else 0
         if run >= min_levels:

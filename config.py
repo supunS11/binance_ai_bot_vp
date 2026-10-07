@@ -145,7 +145,7 @@ WATCHLIST_REFRESH_SECONDS = env_float("WATCHLIST_REFRESH_SECONDS", 300.0)
 # Live 1m candles over websockets (data/ws_feed.py). OFF by default: REST stays the path
 # until the feed has been checked against it. When on, the feed only fills the candle
 # cache and REST still covers every gap.
-WS_ENABLED = env_bool("WS_ENABLED", "False")
+WS_ENABLED = env_bool("WS_ENABLED", "True")
 WS_SYMBOLS_PER_SOCKET = env_int("WS_SYMBOLS_PER_SOCKET", 100)
 WS_STALE_SECONDS = env_float("WS_STALE_SECONDS", 45.0)
 WS_WATCHDOG_INTERVAL_SECONDS = env_float("WS_WATCHDOG_INTERVAL_SECONDS", 15.0)
@@ -223,6 +223,10 @@ OFR_STOP_BUFFER_ATR = env_float("OFR_STOP_BUFFER_ATR", 0.20)
 OFR_TP_MIN_R = env_float("OFR_TP_MIN_R", 1.2)
 OFR_TP_FALLBACK_R = env_float("OFR_TP_FALLBACK_R", 2.0)
 OFR_DEV_SUPPORT_ATR = env_float("OFR_DEV_SUPPORT_ATR", 0.50)
+# How many 5m bars of the leg into a zone count toward the approach-quality read (CVD
+# divergence), capped so a zone that has been sitting untouched for hours does not pull in
+# an unrelated earlier move as if it were part of the approach.
+OFR_APPROACH_MAX_BARS = env_int("OFR_APPROACH_MAX_BARS", 12)
 # Which touches of a zone can trigger S4. "any": every visit this session, each still needing
 # order-flow confirmation - the owner's choice, since true first visits are rare once a
 # previous-day profile is in use. "first": only the zone's first visit (the original rule).
@@ -232,15 +236,23 @@ OFR_VISIT_RULE = env_str("OFR_VISIT_RULE", "any").strip().lower()
 # STACKED and RESTING from the feed recorder (data/feed_reader.py). OFF until replayed:
 # recording started recently, so there is little history to test against. Thresholds are
 # the starting points proposed in the order-flow plan, fixed before any result is seen.
-OFR_USE_RECORDED_FLOW = env_bool("OFR_USE_RECORDED_FLOW", "False")
+OFR_USE_RECORDED_FLOW = env_bool("OFR_USE_RECORDED_FLOW", "True")
 OFR_FLOW_WINDOW_MINUTES = env_int("OFR_FLOW_WINDOW_MINUTES", 10)
 OFR_STACK_RATIO = env_float("OFR_STACK_RATIO", 3.0)
 OFR_STACK_MIN_LEVELS = env_int("OFR_STACK_MIN_LEVELS", 3)
 OFR_RESTING_SIZE_MULT = env_float("OFR_RESTING_SIZE_MULT", 3.0)
 OFR_RESTING_PERSIST = env_float("OFR_RESTING_PERSIST", 0.6)
+
+# In-zone watch (setups/zone_watch.py): from the first touch of a zone, every closed 1m candle is
+# checked for order-flow confirmation and for a close that moves the expected way, and the trade
+# is entered at market. Replaces the touch-then-follow-through path when on. Not yet measured by
+# replay; on by default as an explicit operator decision.
+ZONE_WATCH_ENABLED = env_bool("ZONE_WATCH_ENABLED", "True")
+# Seconds after each 1m close before the cycle runs, so the closed candle has reached the cache.
+ZONE_WATCH_CLOSE_DELAY_SECONDS = env_int("ZONE_WATCH_CLOSE_DELAY_SECONDS", 2)
 # Profile-shape bias for S4: on a BULL or BEAR day, reversals against the bias are refused
 # (see profile/shape.py day_bias). A market opinion, so OFF until replay validates it.
-BIAS_FILTER_ENABLED = env_bool("BIAS_FILTER_ENABLED", "False")
+BIAS_FILTER_ENABLED = env_bool("BIAS_FILTER_ENABLED", "True")
 VA_HVN_STABILITY_TOL_BINS = env_float("VA_HVN_STABILITY_TOL_BINS", 1.0)
 HVN_PCT = env_float("HVN_PCT", 0.70)
 LVN_PCT = env_float("LVN_PCT", 0.35)
@@ -1084,6 +1096,16 @@ RISK_PCT = env_float("RISK_PCT", 0.0025)
 PAPER_EQUITY = env_float("PAPER_EQUITY", 10_000.0)          # 0.25% of equity per trade
 LEVERAGE = env_int("LEVERAGE", 5)
 MARGIN_TYPE = env_str("MARGIN_TYPE", "ISOLATED")
+
+# Alternate sizing: a FIXED margin per trade, the way bot_ds sizes by default, instead of
+# sizing from the stop. OPT-IN and OFF by default - the entire point of RISK_PCT above is
+# that the loss on a stop-out is a controlled, constant fraction of equity; this mode gives
+# that up in exchange for `notional = MARGIN_PER_TRADE * LEVERAGE` always, so the dollar
+# risk floats with wherever the stop happens to land instead of being chosen. Useful when
+# what you actually want to control is the collateral tied up per trade (e.g. a small live
+# test), not the loss on a stop.
+FIXED_MARGIN_SIZING_ENABLED = env_bool("FIXED_MARGIN_SIZING_ENABLED", "False")
+MARGIN_PER_TRADE = env_float("MARGIN_PER_TRADE", 5.0)
 
 MAX_CONCURRENT_POSITIONS = env_int("MAX_CONCURRENT_POSITIONS", 6)
 # Alt perps are close to a one-factor market: ten alt longs is one leveraged

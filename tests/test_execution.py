@@ -15,6 +15,7 @@ WHAT IS ASSERTED, in order of how much a violation would cost:
   4. Sizing, rounding and R arithmetic survive a real fill at a different price.
 """
 import unittest
+from unittest.mock import patch
 
 import config
 import risk
@@ -24,6 +25,21 @@ from execution.router import OrderRouter
 from setups.base import Candidate, SetupState
 from tests.factories import FakeSpec
 from tests.fakevenue import FakeCatalog, FakeVenue
+
+_MARGIN_PIN = None
+
+
+def setUpModule():
+    # This module's risk-budget assertions are against stop-based sizing specifically;
+    # pinned so a live .env enabling fixed-margin sizing cannot flip the assumption.
+    global _MARGIN_PIN
+    _MARGIN_PIN = patch.object(config, "FIXED_MARGIN_SIZING_ENABLED", False)
+    _MARGIN_PIN.start()
+
+
+def tearDownModule():
+    _MARGIN_PIN.stop()
+
 
 SYMBOL = "TESTUSDT"
 

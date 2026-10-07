@@ -111,6 +111,31 @@ def _flip(bars, side):
     return last <= -frac and prev >= frac
 
 
+def approach_leg(bars, zone, max_bars):
+    """The bars that brought price to the zone: everything back to the last bar that did
+    not touch it, capped at `max_bars` so a long-dormant zone does not pull in unrelated
+    history. Excludes the bars actually sitting at the zone - this is the leg IN, not the
+    time spent there, which is what "is momentum fading on the approach" has to mean."""
+    touching_from = len(bars)
+    for index in range(len(bars) - 1, -1, -1):
+        if _touches(bars[index], zone):
+            touching_from = index
+        else:
+            break
+    start = max(0, touching_from - max_bars)
+    return bars[start:touching_from]
+
+
+def structure_break(bars, zone, side, since_index):
+    """The high (BUY) or low (SELL) of the base built since `since_index` - the level a
+    close must clear to say price has actually turned, rather than merely closed past one
+    bar's high. This is the structural reversal gate, not the zone's own band."""
+    base = bars[since_index:]
+    if side == "BUY":
+        return max(bar.high for bar in base)
+    return min(bar.low for bar in base)
+
+
 def _follow_through(bar, zone, side, atr, margin_atr):
     margin = margin_atr * atr
     supportive = _delta_frac(bar) >= 0 if side == "BUY" else _delta_frac(bar) <= 0
@@ -145,7 +170,8 @@ def _recorded_flow(ctx, zone, side):
     levels = feed_reader.trade_levels(config.FEED_OUT_DIR, ctx.symbol, start, end)
     if levels is not None and tick > 0:
         flow["STACKED"] = feed_reader.stacked_imbalance(
-            levels, side, tick, config.OFR_STACK_RATIO, config.OFR_STACK_MIN_LEVELS)
+            levels, side, tick, config.OFR_STACK_RATIO, config.OFR_STACK_MIN_LEVELS,
+            zone.low, zone.high)
     samples = feed_reader.depth_samples(config.FEED_OUT_DIR, ctx.symbol, start, end)
     if samples is not None:
         flow["RESTING"] = feed_reader.resting_large_orders(
