@@ -226,7 +226,86 @@ class FakeVenue:
     def open_orders(self, symbol=None):
         self._record("open_orders", symbol=symbol)
         return [dict(order) for order in self.orders.values()
-                if order["status"] == "NEW"
+                if order["status"] == "NEW" and not order.get("_algo")
+                and (symbol is None or order["symbol"] == symbol)]
+
+    # ------------------------------------------------------------ algo orders
+    #
+    # Modelled as the SAME underlying order (shared id space, same _find/_fill/
+    # cancel_order machinery - trigger_stop and count_open keep working unchanged),
+    # tagged "_algo" so open_orders() excludes it and open_algo_orders() is the only
+    # way to see it - the real separation this fake exists to catch bugs against.
+
+    def new_algo_order(self, **params):
+        self._record("new_algo_order", **params)
+        if params.get("algoType", "CONDITIONAL") != "CONDITIONAL":
+            raise AssertionError(f"unmodelled algoType {params.get('algoType')}")
+        if not params.get("clientAlgoId"):
+            raise AssertionError("every algo order must carry a clientAlgoId")
+
+        symbol = params["symbol"]
+        side = params["side"]
+        order_type = params["type"]
+        quantity = float(params.get("quantity") or 0.0)
+        trigger_price = float(params.get("triggerPrice") or 0.0)
+        close_position = params.get("closePosition") in (True, "true")
+        reduce_only = params.get("reduceOnly") in (True, "true")
+
+        self._check_filters(trigger_price or None,
+                            None if close_position else quantity, is_market=False)
+
+        position = self.positions.get(symbol, 0.0)
+        if (reduce_only or close_position) and position == 0:
+            raise ApiError(-2022, "ReduceOnly Order is rejected")
+
+        if order_type == "STOP_MARKET" and trigger_price > 0:
+            if position > 0 and trigger_price >= self.mark_price:
+                raise ApiError(-2021, "Order would immediately trigger")
+            if position < 0 and trigger_price <= self.mark_price:
+                raise ApiError(-2021, "Order would immediately trigger")
+
+        order_id = self._new_id()
+        client_id = params["clientAlgoId"]
+        order = {
+            "orderId": order_id, "algoId": order_id,
+            "clientOrderId": client_id, "clientAlgoId": client_id,
+            "symbol": symbol, "side": side, "type": order_type,
+            "price": str(params.get("price") or 0.0),
+            "stopPrice": str(trigger_price), "triggerPrice": str(trigger_price),
+            "origQty": str(quantity), "executedQty": "0", "avgPrice": "0",
+            "status": "NEW", "algoStatus": "NEW",
+            "reduceOnly": reduce_only, "closePosition": close_position,
+            "timeInForce": params.get("timeInForce", "GTC"),
+            "_algo": True,
+        }
+        self.orders[order_id] = order
+        return order
+
+    def cancel_algo_order(self, symbol, algo_id=None, client_algo_id=None):
+        self._record("cancel_algo_order", symbol=symbol, algo_id=algo_id,
+                     client_algo_id=client_algo_id)
+        order = self._find(symbol, algo_id, client_algo_id)
+        if order is None:
+            raise ApiError(-2011, "Unknown order sent")
+        if order["status"] != "NEW":
+            raise ApiError(-2011, "Unknown order sent")
+        order["status"] = "CANCELED"
+        order["algoStatus"] = "CANCELED"
+        return order
+
+    def cancel_all_algo_orders(self, symbol):
+        self._record("cancel_all_algo_orders", symbol=symbol)
+        for order in self.orders.values():
+            if order.get("_algo") and order["symbol"] == symbol \
+                    and order["status"] == "NEW":
+                order["status"] = "CANCELED"
+                order["algoStatus"] = "CANCELED"
+        return {"code": 200}
+
+    def open_algo_orders(self, symbol=None):
+        self._record("open_algo_orders", symbol=symbol)
+        return [dict(order) for order in self.orders.values()
+                if order.get("_algo") and order["status"] == "NEW"
                 and (symbol is None or order["symbol"] == symbol)]
 
     def _find(self, symbol, order_id, client_order_id):

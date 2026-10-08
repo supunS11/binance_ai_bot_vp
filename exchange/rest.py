@@ -421,6 +421,48 @@ class RestClient:
         return self._request("GET", "/fapi/v1/openOrders", params,
                              weight=1 if symbol else 40, signed=True)
 
+    # ----------------------------------------------------------- algo orders
+    #
+    # Binance migrated every conditional order type (STOP_MARKET, TAKE_PROFIT_MARKET,
+    # STOP, TAKE_PROFIT, TRAILING_STOP_MARKET) off /fapi/v1/order onto this separate
+    # "Algo Order" service (effective 2025-12-09) - a regular new_order() for one of
+    # these types is refused outright with -4120. It is a genuinely different order
+    # book, not a renamed field: these orders never appear in open_orders() and a
+    # plain cancel_order()/cancel_all_orders() never touches them either.
+    #
+    # Field renames from the classic endpoint: stopPrice -> triggerPrice, orderId ->
+    # algoId, clientOrderId -> clientAlgoId, status -> algoStatus.
+
+    def new_algo_order(self, **params):
+        """Place one conditional (TP/SL) order. Every caller must pass clientAlgoId -
+        same idempotency reasoning as new_order()."""
+        if "clientAlgoId" not in params:
+            raise ValueError("clientAlgoId is required for idempotency")
+        payload = {key: value for key, value in params.items() if value is not None}
+        payload["symbol"] = payload["symbol"].upper()
+        payload.setdefault("algoType", "CONDITIONAL")
+        return self._request("POST", "/fapi/v1/algoOrder", payload,
+                             weight=1, signed=True, is_order=True)
+
+    def cancel_algo_order(self, symbol, algo_id=None, client_algo_id=None):
+        params = {"symbol": symbol.upper()}
+        if algo_id is not None:
+            params["algoId"] = int(algo_id)
+        if client_algo_id is not None:
+            params["clientAlgoId"] = client_algo_id
+        return self._request("DELETE", "/fapi/v1/algoOrder", params,
+                             weight=1, signed=True, is_order=True)
+
+    def cancel_all_algo_orders(self, symbol):
+        return self._request("DELETE", "/fapi/v1/algoOpenOrders",
+                             {"symbol": symbol.upper()},
+                             weight=1, signed=True, is_order=True)
+
+    def open_algo_orders(self, symbol=None):
+        params = {"symbol": symbol.upper()} if symbol else {}
+        return self._request("GET", "/fapi/v1/openAlgoOrders", params,
+                             weight=1, signed=True)
+
     def user_trades(self, symbol, start_ms=None, limit=500):
         """Realised fills, with commission and realised PnL per trade.
 

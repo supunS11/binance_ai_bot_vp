@@ -473,28 +473,37 @@ class PositionManager:
                           symbol, error)
                 self._router.close_at_market(symbol, reason="unprotectable")
             else:
-                managed.stop_order_id = int(stop_order.get("orderId") or 0)
+                managed.stop_order_id = int(stop_order.get("algoId") or 0)
                 self._invalidate_orders(symbol)
 
     def _cancel_orphan_orders(self, exchange_positions):
-        """reduceOnly / close-all orders with no position behind them."""
+        """reduceOnly / close-all orders with no position behind them.
+
+        Scans BOTH order books - a resting stop lives in the algo one (see
+        place_stop()), and an orphaned stop left there is exactly the same hazard as
+        an orphaned target left in the classic one.
+        """
         if exchange_positions is None:
             return
         try:
-            open_orders = self._rest.open_orders() or []
+            open_orders = list(self._rest.open_orders() or [])
+            open_orders += list(self._rest.open_algo_orders() or [])
         except Exception as exc:                  # noqa: BLE001
             log.error("openOrders fetch failed: %s", exc)
             return
 
         for order in open_orders:
+            is_algo = "algoId" in order
             symbol = (order.get("symbol") or "").upper()
-            client_id = order.get("clientOrderId") or ""
+            client_id = order.get("clientOrderId") or order.get("clientAlgoId") or ""
             role = router_mod.order_role(client_id)
 
             # An ENTRY order of ours that we are no longer tracking. This can only
             # happen if tracking was lost - a crash, or a bug - and it is the most
             # dangerous loose end there is, because nothing else would ever cancel it
             # and it fills into a position with no stop that the bot cannot claim.
+            # Entries are never algo orders, so this branch only ever matches the
+            # classic book - is_algo is irrelevant here.
             if role == router_mod.ROLE_ENTRY and not self.has_pending(symbol):
                 log.error("%s: cancelling UNTRACKED entry order %s - it would fill "
                           "into an unmanaged, unprotected position",
@@ -510,8 +519,11 @@ class PositionManager:
             if not is_exit:
                 continue
             log.warning("%s: cancelling orphan exit order %s (no position)",
-                        symbol, order.get("orderId"))
-            self._router.cancel(symbol, order_id=order.get("orderId"))
+                        symbol, order.get("algoId") or order.get("orderId"))
+            if is_algo:
+                self._router.cancel_algo(symbol, algo_id=order.get("algoId"))
+            else:
+                self._router.cancel(symbol, order_id=order.get("orderId"))
             self._invalidate_orders(symbol)
 
     def _replace_missing_targets(self, exchange_positions):
@@ -560,12 +572,19 @@ class PositionManager:
         change while the pass is running. The cache is cleared at the start of every
         reconcile and whenever this module places or cancels something, so it can never
         serve a stale answer across an action.
+
+        Merges in the algo (conditional) order book - the live stop rests there, never
+        in open_orders() alone, see OrderRouter.place_stop. Either call failing is
+        treated as "cannot verify" as a whole: a stop visible only through the half
+        that happened to succeed is not something _has_live_stop can tell apart from
+        one that is genuinely missing.
         """
         symbol = symbol.upper()
         if symbol in self._orders_cache:
             return self._orders_cache[symbol]
         try:
-            orders = self._rest.open_orders(symbol) or []
+            orders = list(self._rest.open_orders(symbol) or [])
+            orders += list(self._rest.open_algo_orders(symbol) or [])
         except Exception as exc:                  # noqa: BLE001
             log.error("%s openOrders failed: %s", symbol, exc)
             # NOT cached: a failed fetch must not be remembered as "no orders", which

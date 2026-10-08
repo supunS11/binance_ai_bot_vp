@@ -203,11 +203,13 @@ class ProtectionInvariantTests(_Base):
 
     def test_stop_is_placed_before_the_target(self):
         self._open_filled()
-        types = [kwargs.get("type") for name, kwargs in self.venue.calls
-                 if name == "new_order"]
-        # LIMIT (entry), STOP_MARKET, LIMIT (target)
-        self.assertEqual(types[1], "STOP_MARKET",
-                         f"stop must be placed before the target, got {types}")
+        # entry and target go through new_order(); the stop goes through
+        # new_algo_order() (see OrderRouter.place_stop) - ordering is across both.
+        calls = [name for name, _ in self.venue.calls
+                if name in ("new_order", "new_algo_order")]
+        # LIMIT (entry), STOP_MARKET algo order, LIMIT (target)
+        self.assertEqual(calls[1], "new_algo_order",
+                         f"stop must be placed before the target, got {calls}")
 
     def test_position_is_closed_when_the_stop_cannot_be_placed(self):
         """The only automatic close in the system, and it must actually happen."""
@@ -216,8 +218,8 @@ class ProtectionInvariantTests(_Base):
         self.venue.fill(client_order_id=candidate.client_order_id, price=100.0)
         # Refuse the stop the way the venue would if it were already through it.
         from exchange.rest import ApiError
-        self.venue.fail_next["new_order"] = ApiError(-2021,
-                                                     "Order would immediately trigger")
+        self.venue.fail_next["new_algo_order"] = ApiError(
+            -2021, "Order would immediately trigger")
 
         self.positions.advance_pending()
 
@@ -330,9 +332,9 @@ class ReconcileDoesNotDuplicateTests(_Base):
 
     def test_replacing_a_missing_stop_does_not_add_a_second_target(self):
         self._open_filled()
-        for order in self.venue.open_orders(SYMBOL):
+        for order in self.venue.open_algo_orders(SYMBOL):
             if order["type"] == "STOP_MARKET":
-                self.venue.cancel_order(SYMBOL, order_id=order["orderId"])
+                self.venue.cancel_algo_order(SYMBOL, algo_id=order["algoId"])
 
         self.positions.reconcile()
 
@@ -374,7 +376,8 @@ class ReconcileDoesNotDuplicateTests(_Base):
         survived would not catch that, so this counts orders placed after the break.
         """
         self._open_filled()
-        before = sum(1 for name, _ in self.venue.calls if name == "new_order")
+        before = sum(1 for name, _ in self.venue.calls
+                    if name in ("new_order", "new_algo_order"))
 
         def broken(symbol=None):
             raise RuntimeError("network")
@@ -382,7 +385,8 @@ class ReconcileDoesNotDuplicateTests(_Base):
         self.venue.open_orders = broken
         self.positions.reconcile()
 
-        after = sum(1 for name, _ in self.venue.calls if name == "new_order")
+        after = sum(1 for name, _ in self.venue.calls
+                   if name in ("new_order", "new_algo_order"))
         self.assertIn(SYMBOL, self.venue.positions,
                       "a network error must never cause a close-at-market")
         self.assertEqual(after, before,
@@ -433,10 +437,16 @@ class OrderHygieneTests(_Base):
         self.venue.fill(client_order_id=candidate.client_order_id, price=100.0)
         self.positions.advance_pending()
         # FakeVenue raises AssertionError if any order lacks one; reaching here is
-        # the assertion. Confirm we actually placed the three we expect.
+        # the assertion. Confirm we actually placed the three we expect - entry and
+        # target through new_order(), the stop through new_algo_order() (see
+        # OrderRouter.place_stop).
         orders = [kwargs for name, kwargs in self.venue.calls if name == "new_order"]
-        self.assertEqual(len(orders), 3)
+        algo_orders = [kwargs for name, kwargs in self.venue.calls
+                      if name == "new_algo_order"]
+        self.assertEqual(len(orders), 2)
+        self.assertEqual(len(algo_orders), 1)
         self.assertTrue(all(o.get("newClientOrderId") for o in orders))
+        self.assertTrue(all(o.get("clientAlgoId") for o in algo_orders))
 
     def test_post_only_rejection_is_a_normal_skip(self):
         """GTX rejection means the market got there first - a race, not a fault."""
@@ -471,9 +481,9 @@ class OrderHygieneTests(_Base):
         self.venue.fill(client_order_id=candidate.client_order_id, price=100.0)
         self.positions.advance_pending()
 
-        orders = self.venue.open_orders(SYMBOL)
-        stop = [o for o in orders if o["type"] == "STOP_MARKET"][0]
-        target = [o for o in orders if o["type"] == "LIMIT"][0]
+        stop = [o for o in self.venue.open_algo_orders(SYMBOL)
+                if o["type"] == "STOP_MARKET"][0]
+        target = [o for o in self.venue.open_orders(SYMBOL) if o["type"] == "LIMIT"][0]
 
         # Long: stop rounds DOWN (further away), target rounds DOWN (nearer entry).
         self.assertLessEqual(float(stop["stopPrice"]), 98.987)

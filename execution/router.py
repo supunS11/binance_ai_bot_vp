@@ -297,6 +297,13 @@ class OrderRouter:
         A stop the venue would trigger immediately (-2021) is the dangerous case: the
         position is already open and already past its invalidation, so the caller must
         close at market rather than retry or leave it naked.
+
+        GOES THROUGH THE ALGO ORDER API, NOT new_order(). Binance migrated every
+        conditional type (STOP_MARKET included) off /fapi/v1/order onto a separate
+        service effective 2025-12-09; placing it the old way is refused outright with
+        -4120 ("Order type not supported for this endpoint"). See new_algo_order() in
+        exchange/rest.py for the field renames this carries (stopPrice -> triggerPrice,
+        orderId -> algoId).
         """
         spec = self._catalog.require(candidate.symbol)
         exit_side = "SELL" if candidate.direction == "BUY" else "BUY"
@@ -305,17 +312,17 @@ class OrderRouter:
                                              candidate.position_side)
         try:
             filters.check_price(stop_price, spec)
-            order = self._rest.new_order(
+            order = self._rest.new_algo_order(
                 symbol=candidate.symbol,
                 side=exit_side,
                 type="STOP_MARKET",
-                stopPrice=filters.price_str(stop_price, spec),
+                triggerPrice=filters.price_str(stop_price, spec),
                 # closePosition closes whatever is actually open, so a partial entry
                 # fill needs no quantity bookkeeping and cannot be under-protected.
                 closePosition="true",
                 workingType=config.STOP_WORKING_TYPE,
                 priceProtect="TRUE" if config.STOP_PRICE_PROTECT else "FALSE",
-                newClientOrderId=client_order_id(ROLE_STOP, candidate.symbol),
+                clientAlgoId=client_order_id(ROLE_STOP, candidate.symbol),
             )
         except filters.FilterRejection as exc:
             return None, f"stop {exc.code}: {exc.detail}"
@@ -324,7 +331,7 @@ class OrderRouter:
                 return None, "STOP_WOULD_TRIGGER_CLOSE_NOW"
             return None, f"stop {exc.code}: {exc.message}"
 
-        candidate.stop_order_id = int(order.get("orderId") or 0)
+        candidate.stop_order_id = int(order.get("algoId") or 0)
         return order, None
 
     def place_target(self, candidate, quantity):
@@ -438,12 +445,31 @@ class OrderRouter:
             log.error("%s cancel failed: %s", symbol, exc)
             return None
 
-    def cancel_all(self, symbol):
+    def cancel_algo(self, symbol, algo_id=None, client_algo_id=None):
+        """Cancel one algo (conditional) order - the stop. Separate from cancel()
+        because it is a different order book at the venue; see place_stop()."""
         try:
-            return self._rest.cancel_all_orders(symbol)
+            return self._rest.cancel_algo_order(symbol, algo_id=algo_id,
+                                                client_algo_id=client_algo_id)
+        except ApiError as exc:
+            if exc.code in (-2011, -2013):
+                return {"status": "ALREADY_GONE"}
+            log.error("%s algo cancel failed: %s", symbol, exc)
+            return None
+
+    def cancel_all(self, symbol):
+        """Sweep both order books - a resting stop lives in the algo one, never the
+        classic one, so cancel_all_orders() alone would leave it behind."""
+        try:
+            result = self._rest.cancel_all_orders(symbol)
         except ApiError as exc:
             log.error("%s cancel-all failed: %s", symbol, exc)
-            return None
+            result = None
+        try:
+            self._rest.cancel_all_algo_orders(symbol)
+        except ApiError as exc:
+            log.error("%s algo cancel-all failed: %s", symbol, exc)
+        return result
 
     # ------------------------------------------------------------ fill state
 
