@@ -600,12 +600,22 @@ class PositionManager:
         a transient openOrders failure look exactly like a missing stop, and the
         response to a missing stop is to place another one or close the position at
         market - acting destructively on a network error.
+
+        THE STOP'S OWN TYPE FIELD IS NAMED DIFFERENTLY ON EACH BOOK. A classic-book
+        order (from open_orders()) carries it as "type"; an algo-book order (from
+        open_algo_orders(), where a conditional stop actually rests - see
+        OrderRouter.place_stop) carries it as "orderType" instead, confirmed against
+        Binance's own Query Algo Order response schema. Checking only "type" reads
+        every real algo stop as absent, which made reconcile try to place a SECOND
+        one every cycle, get refused with -4130 ("an open stop... already exists"),
+        and close the position at market as if it had genuinely failed to protect -
+        confirmed live before this fix.
         """
         orders = self._open_orders_for(symbol)
         if orders is None:
             return None
         for order in orders:
-            if order.get("type") in ("STOP_MARKET", "STOP"):
+            if (order.get("type") or order.get("orderType")) in ("STOP_MARKET", "STOP"):
                 return True
         return False
 

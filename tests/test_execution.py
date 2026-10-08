@@ -333,7 +333,7 @@ class ReconcileDoesNotDuplicateTests(_Base):
     def test_replacing_a_missing_stop_does_not_add_a_second_target(self):
         self._open_filled()
         for order in self.venue.open_algo_orders(SYMBOL):
-            if order["type"] == "STOP_MARKET":
+            if order["orderType"] == "STOP_MARKET":
                 self.venue.cancel_algo_order(SYMBOL, algo_id=order["algoId"])
 
         self.positions.reconcile()
@@ -482,7 +482,7 @@ class OrderHygieneTests(_Base):
         self.positions.advance_pending()
 
         stop = [o for o in self.venue.open_algo_orders(SYMBOL)
-                if o["type"] == "STOP_MARKET"][0]
+                if o["orderType"] == "STOP_MARKET"][0]
         target = [o for o in self.venue.open_orders(SYMBOL) if o["type"] == "LIMIT"][0]
 
         # Long: stop rounds DOWN (further away), target rounds DOWN (nearer entry).

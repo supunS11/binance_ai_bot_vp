@@ -235,6 +235,21 @@ class FakeVenue:
     # cancel_order machinery - trigger_stop and count_open keep working unchanged),
     # tagged "_algo" so open_orders() excludes it and open_algo_orders() is the only
     # way to see it - the real separation this fake exists to catch bugs against.
+    #
+    # THE TYPE FIELD IS RENAMED AT THE RESPONSE BOUNDARY, on purpose. Internally the
+    # order dict keeps "type" (so _find/trigger_stop/count_open/_check_filters stay
+    # uniform across both books), but Binance's real algo-order responses carry it as
+    # "orderType" instead, confirmed against the Query Algo Order schema - a plain
+    # "type" key is simply absent. A fake that also returned "type" here would be
+    # exactly the permissive-mock failure this file's own docstring warns about: it
+    # agreed with code that read the wrong field name, which is the live bug that
+    # actually shipped (execution/positions.py::_has_live_stop never saw a live algo
+    # stop, kept trying to place a second one, and got refused with -4130).
+
+    def _algo_view(self, order):
+        view = dict(order)
+        view["orderType"] = view.pop("type")
+        return view
 
     def new_algo_order(self, **params):
         self._record("new_algo_order", **params)
@@ -279,7 +294,7 @@ class FakeVenue:
             "_algo": True,
         }
         self.orders[order_id] = order
-        return order
+        return self._algo_view(order)
 
     def cancel_algo_order(self, symbol, algo_id=None, client_algo_id=None):
         self._record("cancel_algo_order", symbol=symbol, algo_id=algo_id,
@@ -291,7 +306,7 @@ class FakeVenue:
             raise ApiError(-2011, "Unknown order sent")
         order["status"] = "CANCELED"
         order["algoStatus"] = "CANCELED"
-        return order
+        return self._algo_view(order)
 
     def cancel_all_algo_orders(self, symbol):
         self._record("cancel_all_algo_orders", symbol=symbol)
@@ -304,7 +319,7 @@ class FakeVenue:
 
     def open_algo_orders(self, symbol=None):
         self._record("open_algo_orders", symbol=symbol)
-        return [dict(order) for order in self.orders.values()
+        return [self._algo_view(order) for order in self.orders.values()
                 if order.get("_algo") and order["status"] == "NEW"
                 and (symbol is None or order["symbol"] == symbol)]
 
