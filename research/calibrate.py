@@ -31,9 +31,19 @@ value. Measuring at the excursion's extreme instead would be lookahead - the ext
 is only knowable afterwards, and calibrating on it produces thresholds that cannot be
 applied live.
 
+SWEEP C - SHAPE BIAS vs NEXT SESSION (one row per symbol-session)
+    day_bias(shape) - P/b's POC-position skew, trend's elongation/migration -
+    makes a directional claim BIAS_FILTER_ENABLED gates real S4-OFR trades on
+    (at watch-start, and since today's fix, re-checked at entry too). Sweeps A
+    and B do not test it: A is the shape's own distribution, with no outcome;
+    B calibrates a different threshold entirely. This sweep tests the claim
+    itself against the FOLLOWING session's own price action, decoupled from
+    whether S4-OFR happened to trade it - see sweep_shape_bias's docstring.
+
 Run:
     python -m research.calibrate --sweep profile
     python -m research.calibrate --sweep acceptance
+    python -m research.calibrate --sweep shape_bias
     python -m research.calibrate --sweep both --out calib
 """
 import argparse
@@ -45,7 +55,7 @@ import time
 import config
 import sessions
 from data import klines as klines_mod
-from profile import builder, levels as levels_mod, shape as shape_mod
+from profile import builder, levels as levels_mod, relations, shape as shape_mod
 import acceptance as acceptance_mod
 from research import dataset, metrics
 from research.historical import HistoricalCache, StaticCatalog
@@ -741,11 +751,400 @@ def report_acceptance(rows):
                                  high=metrics.percentile(ratios, 0.98)))
 
 
+# ------------------------------------- sweep C: shape's bias vs next session
+#
+# Sweeps A and B leave a gap: A measures shape's raw DISTRIBUTION (poc_position,
+# va_range_ratio, ...) and needs no outcome by its own docstring; B calibrates the
+# acceptance ratio against a forward outcome. Nothing calibrates SHAPE_P_MIN_POC_
+# POSITION / SHAPE_B_MAX_POC_POSITION / SHAPE_TREND_* against one - and those
+# thresholds now gate real trades through day_bias() -> BIAS_FILTER_ENABLED, at
+# both watch-start and (as of today's fix) entry. config.py's own comment on the
+# P/b cutoffs says they were left uncalibrated specifically because "nothing trades
+# on the P-vs-b distinction" - no longer true.
+#
+# THE OUTCOME IS DECOUPLED FROM S4-OFR ON PURPOSE. day_bias() is the claim under
+# test, not whether a live trade agreed with it - conflating the two is exactly
+# the mistake the P-shape investigation already corrected (bad trades were blamed
+# on the shape when the bug was in the gating, not the classification). So every
+# outcome below is read directly from price/profile over the FOLLOWING session -
+# never filtered by zone touches, absorption, or anything else S4-OFR's entry logic
+# does.
+#
+# THREE INDEPENDENT OPERATIONALISATIONS OF "DID THE BIAS PLAY OUT", reported side
+# by side rather than one silently chosen - a literature review done on this sweep's
+# first (open-to-close-only) output flagged that as the least theory-aligned of the
+# three:
+#   agrees_with_bias             value migration: did the next session's OWN value
+#                                 area move in the predicted direction and fail to
+#                                 overlap with today's - the PRIMARY label, closest
+#                                 to "did the auction accept the new location."
+#   agrees_with_bias_return      next-session open-to-close return, in ATR - the
+#                                 original, simplest, least circular measure. Kept
+#                                 as a named secondary column, not replaced.
+#   agrees_with_bias_new_extreme did the next session clear today's own high (BULL)
+#                                 or low (BEAR) - genuine follow-through. None when
+#                                 neither or both extremes cleared, same "exactly one
+#                                 of two symmetric thresholds" discipline
+#                                 _report_directional already uses below.
+#
+# UTC CALENDAR-DAY SESSIONS ARE AN ACCOUNTING BOUNDARY ON A 24/7 PERPETUAL, not a
+# genuine auction boundary - profile/relations.py's own docstring already makes this
+# point for the open-relationship read, and it applies here too. Treat any threshold
+# this sweep finds as calibrated against a structurally noisier feature than the
+# same technique would be on an instrument with real session opens/closes, and
+# prefer a larger, more consistent effect before trusting it for that reason alone.
+
+SHAPE_BIAS_FIELDS = [
+    "symbol", "qv_rank", "session_id", "session_start_ms", "atr",
+    "shape", "auction_state", "day_bias",
+    "poc_position", "va_range_ratio", "intra_poc_migration_atr",
+    "bimodal", "second_mode_fraction", "valley_fraction",
+    "excess_high", "excess_low", "poor_high", "poor_low",
+    "next_session_id", "next_return_atr", "next_value_migration",
+    "next_higher_high", "next_lower_low",
+    "agrees_with_bias", "agrees_with_bias_return", "agrees_with_bias_new_extreme",
+]
+
+_MIGRATION_AGREES_BULL = ("HIGHER", "OVERLAPPING_HIGHER")
+_MIGRATION_AGREES_BEAR = ("LOWER", "OVERLAPPING_LOWER")
+
+
+def _agreement_from_migration(bias, migration_label):
+    """PRIMARY outcome: BULL/BEAR vs whether the next session's own value area
+    moved in that direction and failed to overlap - see the module note above.
+
+    None for a NEUTRAL bias, an unmeasured migration, or a label that makes no
+    directional claim either way (INSIDE/OUTSIDE/UNCHANGED) - never coerced.
+    """
+    if bias not in ("BULL", "BEAR") or not migration_label:
+        return None
+    agrees_bull = migration_label in _MIGRATION_AGREES_BULL
+    agrees_bear = migration_label in _MIGRATION_AGREES_BEAR
+    if not agrees_bull and not agrees_bear:
+        return None
+    return int(agrees_bull == (bias == "BULL"))
+
+
+def _agreement_from_return(bias, next_return_atr):
+    """SECONDARY outcome: the original, simplest measure - raw next-session
+    open-to-close return. None for a NEUTRAL bias or an exactly-flat return."""
+    if bias not in ("BULL", "BEAR") or not next_return_atr:
+        return None
+    return int((next_return_atr > 0) == (bias == "BULL"))
+
+
+def _agreement_from_new_extreme(bias, higher_high, lower_low):
+    """SECONDARY outcome: genuine follow-through - did the next session clear
+    today's own high/low. Both or neither cleared is dropped as carrying no
+    directional information, the same "exactly one of two symmetric thresholds"
+    rule _report_directional already applies to the acceptance sweep below."""
+    if bias not in ("BULL", "BEAR") or higher_high == lower_low:
+        return None
+    return int(higher_high == (bias == "BULL"))
+
+
+def shape_bias_row(scanner, cache, symbol, qv_rank, session_id):
+    """One row: THIS session's shape-derived day_bias(), tested against what price
+    and the next session's own profile actually did - three independent agreement
+    columns, see the module note above for what each means and why none of them is
+    coerced when its own claim does not resolve.
+    """
+    session_start = sessions.session_start_ms_from_id(session_id)
+    next_start = session_start + sessions.MS_DAY
+    next_end = next_start + sessions.MS_DAY
+
+    cache.set_as_of(next_start)
+    cache.clear_frozen()
+    bundle, reason = scanner.frozen_bundle(symbol, sessions.session_id(next_start),
+                                           next_start)
+    if bundle is None:
+        return None, reason
+    shape = bundle.shape
+    if shape is None:
+        return None, "NO_SHAPE"
+
+    bias = shape_mod.day_bias(shape)
+    atr = bundle.atr
+
+    # THE FOLLOWING SESSION'S OWN TRADING - this is what makes the row a forward
+    # test rather than a restatement of today. set_as_of is moved to its close so
+    # minute_candles can return the whole thing; nothing about THIS session's own
+    # measurement above depended on it.
+    cache.set_as_of(next_end)
+    next_candles = cache.minute_candles(symbol, next_start, next_end)
+    if len(next_candles) < config.PROFILE_MIN_CANDLES:
+        return None, "THIN_NEXT_SESSION"
+
+    next_return_atr = ((next_candles[-1].close - next_candles[0].open) / atr
+                       if atr > 0 else None)
+    higher_high = max(c.high for c in next_candles) > bundle.profile.high
+    lower_low = min(c.low for c in next_candles) < bundle.profile.low
+
+    next_profile = builder.profile_as_of(
+        symbol, next_candles, next_start, next_end, next_end, bundle.bin_size)
+    next_levels = levels_mod.compute(next_profile)
+    next_migration_label = (
+        relations.classify_migration(next_levels, bundle.levels, atr).label
+        if next_levels is not None else None)
+
+    return {
+        "symbol": symbol, "qv_rank": qv_rank, "session_id": session_id,
+        "session_start_ms": session_start, "atr": atr,
+        "shape": shape.label, "auction_state": shape.auction_state,
+        "day_bias": bias,
+        "poc_position": round(shape.poc_position, 4),
+        "va_range_ratio": round(shape.va_range_ratio, 4),
+        "intra_poc_migration_atr": (
+            round(shape.intra_poc_migration_atr, 4)
+            if shape.intra_poc_migration_atr is not None else None),
+        "bimodal": int(shape.bimodal),
+        "second_mode_fraction": round(shape.second_mode_fraction, 4),
+        "valley_fraction": round(shape.valley_fraction, 4),
+        "excess_high": int(shape.excess_high), "excess_low": int(shape.excess_low),
+        "poor_high": int(shape.poor_high), "poor_low": int(shape.poor_low),
+        "next_session_id": sessions.session_id(next_start),
+        "next_return_atr": (round(next_return_atr, 5)
+                            if next_return_atr is not None else None),
+        "next_value_migration": next_migration_label,
+        "next_higher_high": int(higher_high), "next_lower_low": int(lower_low),
+        "agrees_with_bias": _agreement_from_migration(bias, next_migration_label),
+        "agrees_with_bias_return": _agreement_from_return(bias, next_return_atr),
+        "agrees_with_bias_new_extreme": _agreement_from_new_extreme(
+            bias, higher_high, lower_low),
+    }, None
+
+
+def sweep_shape_bias(cache, catalog, universe, limit_symbols=None):
+    scanner = Scanner(rest=None, catalog=catalog, cache=cache, journal=None)
+    rows, refusals = [], {}
+    symbols = [row for row in universe if catalog.get(row["symbol"])]
+    if limit_symbols:
+        symbols = symbols[:limit_symbols]
+
+    started = time.time()
+    for index, entry in enumerate(symbols, start=1):
+        symbol = entry["symbol"]
+        for session_id in corpus_sessions(cache, symbol):
+            try:
+                row, reason = shape_bias_row(scanner, cache, symbol,
+                                             entry["qv_rank"], session_id)
+            except Exception as exc:                        # noqa: BLE001
+                log.debug("%s %s failed: %s", symbol, session_id, exc)
+                refusals["EXCEPTION"] = refusals.get("EXCEPTION", 0) + 1
+                continue
+            if row is None:
+                refusals[reason] = refusals.get(reason, 0) + 1
+                continue
+            rows.append(row)
+        cache.release(symbol)
+        if index % 10 == 0 or index == len(symbols):
+            log.info("shape_bias: %d/%d symbols, %d rows, %.0fs",
+                     index, len(symbols), len(rows), time.time() - started)
+    return rows, refusals
+
+
+def _directional_auc(rows, measure_key):
+    """Does `measure_key` rank-separate sessions whose NEXT return was positive
+    from ones whose next return was negative?
+
+    Deliberately NOT restricted to rows already labelled P or b - that would only
+    show how well the axis orders days AFTER today's cutoff already selected them,
+    which cannot say whether 0.65/0.35 is the right place to cut. This looks at the
+    axis's full range against the only ground truth that matters (what price
+    actually did next), the same posture as report_acceptance's rank-separation
+    test for volume_rate_ratio.
+    """
+    usable = [row for row in rows
+             if row.get(measure_key) is not None and row.get("next_return_atr")]
+    positive = [row[measure_key] for row in usable if row["next_return_atr"] > 0]
+    negative = [row[measure_key] for row in usable if row["next_return_atr"] < 0]
+    return metrics.auc(positive, negative)
+
+
+def _threshold_grid(rows, measure_key, thresholds, side):
+    """Agreement rate if `measure_key >= threshold` (side="P") or
+    `measure_key <= threshold` (side="b") were used as the ENTIRE bias call,
+    at each candidate cutoff - the same grid-sweep instrument config.py's own
+    comments already used for the bimodal thresholds (0.60-0.90 x 0.15-0.35),
+    applied here to the P/b axis with an actual outcome attached.
+    """
+    usable = [row for row in rows
+             if row.get(measure_key) is not None and row.get("next_return_atr")]
+    print(f"\n  {measure_key} as the WHOLE bias call ({side}-side, "
+         f">= cutoff -> BULL)" if side == "P" else
+         f"\n  {measure_key} as the WHOLE bias call ({side}-side, <= cutoff -> BEAR)")
+    print(f"  {'cutoff':<8} {'n':>6}  {'agree with next-session direction (95% CI)'}")
+    for cutoff in thresholds:
+        if side == "P":
+            selected = [row for row in usable if row[measure_key] >= cutoff]
+            predicted_bull = True
+        else:
+            selected = [row for row in usable if row[measure_key] <= cutoff]
+            predicted_bull = False
+        if len(selected) < 30:
+            print(f"  {cutoff:<8.2f} {len(selected):>6d}  (too few rows)")
+            continue
+        agree = sum(1 for row in selected
+                   if (row["next_return_atr"] > 0) == predicted_bull)
+        point, lo, hi = metrics.wilson_interval(agree, len(selected))
+        print(f"  {cutoff:<8.2f} {len(selected):>6d}  "
+             f"{point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
+
+
+def _agreement_summary(rows, key, title):
+    """Agreement rate for one outcome column, three ways: the naive Wilson interval
+    (treats every row as independent, which overstates precision - consecutive
+    sessions on one symbol are not independent evidence, nor are different symbols
+    on the same calendar day), and the same rate clustered by symbol and by session
+    - metrics.clustered_mean_interval already exists for exactly this reasoning.
+    Printing all three makes the gap between naive and clustered itself the honest
+    answer to "how much of that precision was real."
+
+    Returns the resolved subset (for callers that stratify it further), or None.
+    """
+    resolved = [row for row in rows if row.get(key) is not None]
+    print(f"\n{title}  (resolved {len(resolved)}/{len(rows)})")
+    if not resolved:
+        return None
+    point, lo, hi = metrics.wilson_interval(
+        sum(row[key] for row in resolved), len(resolved))
+    by_symbol = metrics.clustered_mean_interval(
+        resolved, lambda r: r[key], lambda r: r["symbol"])
+    by_session = metrics.clustered_mean_interval(
+        resolved, lambda r: r[key], lambda r: r["session_id"])
+    print(f"  naive Wilson           {point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
+    print(f"  clustered by symbol    {by_symbol['mean']*100:>5.1f}% "
+         f"[{by_symbol['low']*100:>4.1f},{by_symbol['high']*100:>4.1f}]  "
+         f"({by_symbol['clusters']} symbols)")
+    print(f"  clustered by session   {by_session['mean']*100:>5.1f}% "
+         f"[{by_session['low']*100:>4.1f},{by_session['high']*100:>4.1f}]  "
+         f"({by_session['clusters']} sessions)")
+    return resolved
+
+
+def _stratify_by_extreme(rows, key, excess_key, poor_key, label):
+    """Does the extreme's own completeness (excess = clean rejection, poor =
+    unfinished, tends to be revisited) change whether the bias played out?
+    Literature treats these as material modifiers to a P/b read, not decoration -
+    this answers whether day_bias() SHOULD fold them in, before any code does."""
+    groups = {
+        "excess": [r for r in rows if r[excess_key] and not r[poor_key]],
+        "poor": [r for r in rows if r[poor_key] and not r[excess_key]],
+        "neither": [r for r in rows if not r[excess_key] and not r[poor_key]],
+    }
+    for name, group in groups.items():
+        if len(group) < 15:
+            print(f"    {label} | {name:<8} n={len(group):>4d}  (too few)")
+            continue
+        point, lo, hi = metrics.wilson_interval(
+            sum(row[key] for row in group), len(group))
+        print(f"    {label} | {name:<8} n={len(group):>4d}  "
+             f"{point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
+
+
+def _outcomes_agree_with_each_other(rows, pairs):
+    print(f"\nDO THE THREE OUTCOME DEFINITIONS AGREE WITH EACH OTHER?")
+    print(f"  (independent of day_bias - just whether they tell the same story)")
+    for key_a, key_b, label in pairs:
+        both = [row for row in rows
+               if row.get(key_a) is not None and row.get(key_b) is not None]
+        if len(both) < 20:
+            print(f"  {label:<32} n={len(both):>5d}  (too few)")
+            continue
+        match = sum(1 for row in both if row[key_a] == row[key_b])
+        print(f"  {label:<32} n={len(both):>5d}  agree: {match/len(both)*100:.1f}%")
+
+
+def report_shape_bias(rows):
+    """Does day_bias() - and the thresholds it is built from - predict anything?"""
+    if not rows:
+        print("no shape-bias rows")
+        return
+
+    print(f"\n{'='*78}\nSHAPE BIAS vs NEXT SESSION   n={len(rows)} symbol-sessions")
+    print(f"{'='*78}")
+    print("Three independent readings of \"did the bias play out\" - value migration")
+    print("(PRIMARY), next-session return, and a new-extreme clear - shown side by")
+    print("side rather than one silently chosen. Decoupled from S4-OFR's own entry")
+    print("mechanics on purpose - see the module note above shape_bias_row.\n")
+    print("UTC calendar-day sessions are an accounting boundary on this venue, not a")
+    print("genuine auction boundary - treat any threshold found here as calibrated")
+    print("against a structurally noisier feature than on an instrument with real")
+    print("session opens/closes, and prefer a larger, more consistent effect.")
+
+    by_shape = metrics.group_by(rows, "shape")
+    print("\nSHAPE MIX in this sample")
+    for label in sorted(by_shape, key=lambda key: -len(by_shape[key])):
+        print(f"  {label:<8} {len(by_shape[label]):>6d}")
+
+    primary = _agreement_summary(rows, "agrees_with_bias",
+                                 "PRIMARY OUTCOME: next session's value migration")
+    _agreement_summary(rows, "agrees_with_bias_return",
+                       "SECONDARY: next-session open-to-close return")
+    _agreement_summary(rows, "agrees_with_bias_new_extreme",
+                       "SECONDARY: next session clears today's own high/low")
+
+    _outcomes_agree_with_each_other(rows, [
+        ("agrees_with_bias", "agrees_with_bias_return", "migration vs return"),
+        ("agrees_with_bias", "agrees_with_bias_new_extreme", "migration vs new extreme"),
+        ("agrees_with_bias_return", "agrees_with_bias_new_extreme",
+         "return vs new extreme"),
+    ])
+
+    if primary:
+        print(f"\nBY SHAPE LABEL (primary outcome - does P's bias agree more/less "
+             f"than b's?)")
+        by_label = metrics.group_by(primary, "shape")
+        for label in sorted(by_label, key=lambda key: -len(by_label[key])):
+            group = by_label[label]
+            if len(group) < 20:
+                continue
+            point, lo, hi = metrics.wilson_interval(
+                sum(row["agrees_with_bias"] for row in group), len(group))
+            print(f"    {label:<8} n={len(group):>5d}  "
+                 f"{point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
+
+        print(f"\nEXCESS/POOR STRATIFICATION (primary outcome) - a clean rejection and")
+        print(f"  an unfinished auction get the identical bias vote today; should they?")
+        p_rows = [row for row in primary if row["shape"] == "P"]
+        _stratify_by_extreme(p_rows, "agrees_with_bias", "excess_high", "poor_high",
+                             "P (high)")
+        b_rows = [row for row in primary if row["shape"] == "b"]
+        _stratify_by_extreme(b_rows, "agrees_with_bias", "excess_low", "poor_low",
+                             "b (low)")
+
+    print(f"\nRANK SEPARATION (full range, not just rows already labelled P/b/trend;")
+    print(f"  0.500 = the axis carries no directional information at all)")
+    for key in ("poc_position", "va_range_ratio"):
+        result = _directional_auc(rows, key)
+        if result:
+            print(f"  {key:<24} AUC={result['auc']:.4f} "
+                 f"[{result['low']:.4f},{result['high']:.4f}]  n={result['n_pos']}+"
+                 f"{result['n_neg']}   {metrics.auc_verdict(result)}")
+    abs_migration_rows = [
+        {**row, "_abs_migration": abs(row["intra_poc_migration_atr"])}
+        for row in rows if row.get("intra_poc_migration_atr") is not None]
+    if abs_migration_rows:
+        result = _directional_auc(abs_migration_rows, "_abs_migration")
+        if result:
+            print(f"  {'|intra_poc_migration_atr|':<24} AUC={result['auc']:.4f} "
+                 f"[{result['low']:.4f},{result['high']:.4f}]  n={result['n_pos']}+"
+                 f"{result['n_neg']}   {metrics.auc_verdict(result)}")
+
+    print(f"\nTHRESHOLD GRID - where (if anywhere) does a cutoff actually separate")
+    print(f"  agreement from disagreement, vs. the current 0.65/0.35?")
+    _threshold_grid(rows, "poc_position",
+                    (0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85), side="P")
+    _threshold_grid(rows, "poc_position",
+                    (0.45, 0.40, 0.35, 0.30, 0.25, 0.20, 0.15), side="b")
+
+
 # --------------------------------------------------------------------- main
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Phase 0 calibration sweeps.")
-    parser.add_argument("--sweep", choices=("profile", "acceptance", "both"),
+    parser.add_argument("--sweep",
+                        choices=("profile", "acceptance", "shape_bias", "both"),
                         default="both")
     parser.add_argument("--root", default=None, help="corpus root (PARQUET_DIR)")
     parser.add_argument("--out", default="calibration", help="output directory")
@@ -792,6 +1191,18 @@ def main(argv=None):
         name = "acceptance_every.csv" if args.every_candle else "acceptance.csv"
         path = write_csv(os.path.join(args.out, name), rows, ACCEPTANCE_FIELDS)
         report_acceptance(rows)
+        if refusals:
+            print(f"\nrefused sessions: "
+                  f"{', '.join(f'{k}={v}' for k, v in sorted(refusals.items()))}")
+        if path:
+            print(f"\nwrote {path}")
+
+    if args.sweep == "shape_bias":
+        cache.release()
+        rows, refusals = sweep_shape_bias(cache, catalog, universe, args.symbols)
+        path = write_csv(os.path.join(args.out, "shape_bias.csv"), rows,
+                         SHAPE_BIAS_FIELDS)
+        report_shape_bias(rows)
         if refusals:
             print(f"\nrefused sessions: "
                   f"{', '.join(f'{k}={v}' for k, v in sorted(refusals.items()))}")

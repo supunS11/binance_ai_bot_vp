@@ -61,6 +61,15 @@ class Shape:
     bimodal: bool
     second_mode_price: float = 0.0
     valley_price: float = 0.0
+    # The two continuous fractions SHAPE_BIMODAL_MIN_SECOND_MODE / _MAX_VALLEY
+    # actually threshold against - recorded (even when they fail that threshold) so
+    # a calibration sweep can re-test those cutoffs from stored rows without
+    # rebuilding every profile. 0.0 only when there was nothing to measure at all
+    # (too few bins, no POC volume, or no second peak found anywhere outside the
+    # POC's own neighbourhood) - valley_fraction specifically stays 0.0 whenever
+    # second_mode_fraction itself already failed, since a valley was never located.
+    second_mode_fraction: float = 0.0
+    valley_fraction: float = 0.0
     intra_poc_migration_atr: float = None   # None = not measured, not zero
 
     excess_high: bool = False     # long thin tail at the top = real rejection
@@ -91,6 +100,8 @@ class Shape:
             "va_range_ratio": round(self.va_range_ratio, 4),
             "poc_position": round(self.poc_position, 4),
             "bimodal": self.bimodal,
+            "second_mode_fraction": round(self.second_mode_fraction, 4),
+            "valley_fraction": round(self.valley_fraction, 4),
             "intra_poc_migration_atr": (
                 round(self.intra_poc_migration_atr, 4)
                 if self.intra_poc_migration_atr is not None else None),
@@ -110,10 +121,16 @@ def _bimodality(profile, levels):
     hold - a second peak with no valley is just a broad shoulder of one
     distribution, and a valley with no second peak is an LVN inside a single
     distribution. Only together do they mean value has split.
+
+    Returns (bimodal, second_mode_price, valley_price, second_mode_fraction,
+    valley_fraction) - the two fractions are the continuous values
+    SHAPE_BIMODAL_MIN_SECOND_MODE/_MAX_VALLEY actually compare against, surfaced
+    (not just their pass/fail) so a calibration sweep can re-test those cutoffs
+    without rebuilding every profile.
     """
     histogram = profile.histogram()
     if len(histogram) < 5 or levels.poc_volume <= 0:
-        return False, 0.0, 0.0
+        return False, 0.0, 0.0, 0.0, 0.0
 
     poc_bin = levels.poc_bin
     best_bin, best_volume = None, 0.0
@@ -125,21 +142,24 @@ def _bimodality(profile, levels):
             best_bin, best_volume = index, volume
 
     if best_bin is None:
-        return False, 0.0, 0.0
+        return False, 0.0, 0.0, 0.0, 0.0
 
+    second_mode_fraction = best_volume / levels.poc_volume
     if best_volume < levels.poc_volume * config.SHAPE_BIMODAL_MIN_SECOND_MODE:
-        return False, 0.0, 0.0
+        return False, 0.0, 0.0, second_mode_fraction, 0.0
 
     low, high = sorted((poc_bin, best_bin))
     between = [(index, volume) for index, volume in histogram if low < index < high]
     if not between:
-        return False, 0.0, 0.0
+        return False, 0.0, 0.0, second_mode_fraction, 0.0
 
     valley_bin, valley_volume = min(between, key=lambda pair: pair[1])
+    valley_fraction = valley_volume / levels.poc_volume
     if valley_volume > levels.poc_volume * config.SHAPE_BIMODAL_MAX_VALLEY:
-        return False, 0.0, 0.0
+        return False, 0.0, 0.0, second_mode_fraction, valley_fraction
 
-    return True, profile.bin_center(best_bin), profile.bin_center(valley_bin)
+    return (True, profile.bin_center(best_bin), profile.bin_center(valley_bin),
+           second_mode_fraction, valley_fraction)
 
 
 def _excess(profile, levels):
@@ -266,7 +286,8 @@ def classify(profile, levels, intra_poc_migration_atr=None):
         (levels.poc_price - profile.low) / total_range if total_range > 0 else 0.5
     )
 
-    bimodal, second_mode, valley = _bimodality(profile, levels)
+    bimodal, second_mode, valley, second_mode_fraction, valley_fraction = (
+        _bimodality(profile, levels))
     excess_high, excess_low, poor_high, poor_low = _excess(profile, levels)
 
     # ORDER MATTERS, and D IS THE RESIDUAL.
@@ -314,6 +335,8 @@ def classify(profile, levels, intra_poc_migration_atr=None):
         intra_poc_migration_atr=intra_poc_migration_atr,
         second_mode_price=second_mode,
         valley_price=valley,
+        second_mode_fraction=second_mode_fraction,
+        valley_fraction=valley_fraction,
         excess_high=excess_high,
         excess_low=excess_low,
         poor_high=poor_high,

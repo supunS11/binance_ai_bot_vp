@@ -100,5 +100,81 @@ class PoorExtremeThresholdTests(unittest.TestCase):
                         "25% of POC volume clears the measured 0.15 ceiling")
 
 
+class BimodalFractionTests(unittest.TestCase):
+    """second_mode_fraction/valley_fraction must carry the real ratio the B
+    threshold compares against - not just the pass/fail bimodal bool - so a
+    calibration sweep can re-test SHAPE_BIMODAL_MIN_SECOND_MODE/_MAX_VALLEY from
+    stored rows without rebuilding every profile."""
+
+    def _two_peak_profile(self, second_peak_volume, valley_volume):
+        # POC at bin 4 (volume 100). The exclusion zone (abs(index - poc) < 2)
+        # covers bins 3-5, so bin 6 is the nearest bin eligible to be the "second
+        # peak" - which makes bin 5 the ONLY bin strictly between POC and it, i.e.
+        # the entire valley search. Bins 0-2 and 7 are fixed low "noise" bins, well
+        # below either volume this is ever called with, so they can never win the
+        # best-non-POC-bin race or distort the valley minimum.
+        profile = builder.Profile(
+            symbol="TESTUSDT", window_start=0, window_end=86_400_000,
+            as_of=86_400_000, bin_size=1.0,
+            volume={0: 2.0, 1: 3.0, 2: 4.0, 3: 60.0, 4: 100.0,
+                   5: float(valley_volume), 6: float(second_peak_volume), 7: 5.0},
+        )
+        profile.high = profile.bin_high(7)
+        profile.low = profile.bin_low(0)
+        profile.open = profile.bin_center(4)
+        profile.close = profile.bin_center(4)
+        profile.candle_count = 100
+        profile.total_volume = sum(profile.volume.values())
+        profile.total_quote_volume = profile.total_volume
+        return profile
+
+    def test_a_qualifying_split_records_both_real_fractions(self):
+        profile = self._two_peak_profile(second_peak_volume=70.0, valley_volume=20.0)
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+
+        self.assertTrue(shape.bimodal)
+        self.assertEqual(shape.label, "B")
+        self.assertAlmostEqual(shape.second_mode_fraction, 0.70, places=6)
+        self.assertAlmostEqual(shape.valley_fraction, 0.20, places=6)
+
+    def test_a_second_peak_below_threshold_still_records_its_real_fraction(self):
+        """Sub-threshold on purpose: SHAPE_BIMODAL_MIN_SECOND_MODE defaults to 0.60,
+        so a 40% second peak fails today's cutoff - but the sweep this exists for
+        needs the real 0.40, not a flag that the cutoff was not cleared."""
+        profile = self._two_peak_profile(second_peak_volume=40.0, valley_volume=20.0)
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+
+        self.assertFalse(shape.bimodal)
+        self.assertAlmostEqual(shape.second_mode_fraction, 0.40, places=6)
+        self.assertEqual(shape.valley_fraction, 0.0,
+                        "a valley is never located once the second mode itself "
+                        "already failed")
+
+    def test_too_few_bins_to_measure_records_zero_for_both(self):
+        """len(histogram) < 5 is _bimodality's own "nothing to measure" floor -
+        the genuine zero case, distinct from a second peak that was found and
+        simply measured small."""
+        profile = builder.Profile(
+            symbol="TESTUSDT", window_start=0, window_end=86_400_000,
+            as_of=86_400_000, bin_size=1.0,
+            volume={0: 60.0, 1: 100.0, 2: 60.0},
+        )
+        profile.high = profile.bin_high(2)
+        profile.low = profile.bin_low(0)
+        profile.open = profile.bin_center(1)
+        profile.close = profile.bin_center(1)
+        profile.candle_count = 100
+        profile.total_volume = sum(profile.volume.values())
+        profile.total_quote_volume = profile.total_volume
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+
+        self.assertFalse(shape.bimodal)
+        self.assertEqual(shape.second_mode_fraction, 0.0)
+        self.assertEqual(shape.valley_fraction, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
