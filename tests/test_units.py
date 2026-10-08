@@ -936,7 +936,13 @@ class ConfigReferenceTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         found = {}
         for path in sorted(root.rglob("*.py")):
-            if "__pycache__" in str(path):
+            parts = path.relative_to(root).parts
+            # __pycache__ is never project code; venv is only ever present when a
+            # virtualenv happens to be nested inside the repo (e.g. on a deploy host)
+            # rather than beside it - its vendored packages are not this project's code
+            # and reference their own "config" objects that have nothing to do with
+            # this module.
+            if "__pycache__" in parts or "venv" in parts:
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
