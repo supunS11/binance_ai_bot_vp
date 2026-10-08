@@ -250,6 +250,18 @@ class ZoneWatch:
 
         bias_label, bias_strength = bias_mod.session_bias(ctx)
 
+        # Re-check here, not only at watch-start: the base can run long enough for the
+        # composite read to drift to clearly opposed by the time gate 2 actually fires.
+        # The watch itself is NOT ended - gate 2 keeps re-testing on later bars, same as
+        # any other bar where it fails to move, so a bias that clears later can still
+        # trade the same break.
+        if config.BIAS_FILTER_ENABLED and (
+                (bias_label == "BULL" and side == "SELL") or
+                (bias_label == "BEAR" and side == "BUY")):
+            rejections.append(reject(RejectReason.BIAS_OPPOSED, ofr.SETUP, ctx.symbol,
+                                     direction=side, level_price=zone.center))
+            return None
+
         self._end(state, watch, END_ENTERED, ctx)
         return Candidate(
             setup=ofr.SETUP,

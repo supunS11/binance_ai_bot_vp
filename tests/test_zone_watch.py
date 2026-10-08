@@ -271,6 +271,51 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(entries, [])
 
 
+class BiasAtEntryTests(unittest.TestCase):
+    """The composite bias can drift between watch-start and the structural break actually
+    firing minutes later - _start() only filters the cheap, early case. _enter() re-reads
+    bias fresh (it already did, for recording) and must also refuse the trade if the read
+    has turned clearly opposed by then, without ending the watch - gate 2 may re-fire on a
+    later bar once the bias clears, same as any other bar where _enter() declines."""
+
+    def setUp(self):
+        self.patches = [
+            patch.object(config, "S4_OFR_ENABLED", True),
+            patch.object(config, "BIAS_FILTER_ENABLED", True),
+            patch.object(config, "OFR_VISIT_RULE", "any"),
+            patch.object(config, "OFR_USE_RECORDED_FLOW", False),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_a_bias_that_turns_opposed_by_entry_is_refused_and_the_watch_stays_open(self):
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        with patch.object(zone_watch.bias_mod, "session_bias",
+                          side_effect=[("NEUTRAL", 0), ("BEAR", 2)]):
+            watch = zone_watch.ZoneWatch()
+            entries, rejects = _drive(watch, candles)
+
+        self.assertEqual(entries, [])
+        self.assertEqual([r.reason for r in rejects], [RejectReason.BIAS_OPPOSED])
+        self.assertIn(VAL_INDEX, watch._symbols[SYMBOL].active)
+        self.assertNotIn(VAL_INDEX, watch._symbols[SYMBOL].done)
+
+    def test_a_favorable_bias_at_both_checks_still_enters(self):
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        with patch.object(zone_watch.bias_mod, "session_bias",
+                          side_effect=[("NEUTRAL", 0), ("BULL", 1)]):
+            watch = zone_watch.ZoneWatch()
+            entries, rejects = _drive(watch, candles)
+
+        self.assertEqual(rejects, [])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].direction, "BUY")
+
+
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         self.patch = patch.object(config, "ACTIVE_SETUPS", ["S4-OFR"])
