@@ -148,11 +148,19 @@ def coerce_row(row):
 
 # --------------------------------------------------------------- simulation
 
-def simulate(candidate, forward, spec=None, market_fill=False):
+def simulate(candidate, forward, spec=None, market_fill=False, hold_bars=None):
     """First-touch outcome for one candidate against forward 1m candles.
 
     With `market_fill`, the entry is taken at the first forward candle's open and needs no
     trade-through: a market order fills at the next minute, not at a level.
+
+    `hold_bars` overrides MAX_HOLD_BARS for this call only - the live system and every
+    other replay caller never pass it, so their horizon is unchanged. It exists for
+    research/direction_control.py's mirror: a counterfactual scored on the real trade's
+    own MAX_HOLD_BARS would time out disproportionately on its biggest winners (a sharp
+    move clears its close 1R stop fast but needs more bars to reach a 2R target), which
+    biases the comparison against the mirror. A wider horizon here is not a wider horizon
+    anywhere a real decision gets made.
 
     Returns a dict. `outcome` is one of:
         EXPIRED      never filled inside the fill window
@@ -183,10 +191,11 @@ def simulate(candidate, forward, spec=None, market_fill=False):
     fill_deadline_ms = forward[0].open_time + config.ENTRY_TIMEOUT_SECONDS * 1000
     hold_deadline_ms = None
 
+    hold = MAX_HOLD_BARS if hold_bars is None else hold_bars
     filled_at = None
     if market_fill:
         filled_at = 0
-        hold_deadline_ms = forward[0].open_time + MAX_HOLD_BARS * confirm_ms
+        hold_deadline_ms = forward[0].open_time + hold * confirm_ms
     for index, candle in enumerate(forward):
         if filled_at is not None:
             break
@@ -197,7 +206,7 @@ def simulate(candidate, forward, spec=None, market_fill=False):
         reached = (candle.low <= entry) if direction == "BUY" else (candle.high >= entry)
         if reached:
             filled_at = index
-            hold_deadline_ms = candle.open_time + MAX_HOLD_BARS * confirm_ms
+            hold_deadline_ms = candle.open_time + hold * confirm_ms
             break
 
     if filled_at is None:

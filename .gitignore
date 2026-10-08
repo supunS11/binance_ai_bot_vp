@@ -15,3 +15,6 @@ data_cache*/
 # Generated research output - large, regenerable from replay (summaries stay in CALIBRATION.md)
 calibration/**/*.csv
 calibration/*.csv
+calibration/**/*.json
+calibration/**/*.log
+calibration/*.log

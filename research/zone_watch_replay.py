@@ -169,14 +169,29 @@ def _save_checkpoint(out_dir, symbol, rows, rejects, timings):
     os.replace(tmp, path)        # atomic - a crash mid-write never leaves a half file
 
 
+def _shard(entries, shard_index, shard_count):
+    """A contiguous block of `entries` for this shard, so N processes covering the same
+    --symbols count between them never overlap and never skip one. Contiguous (not
+    round-robin) so each shard's own log reads as one unbroken block of symbols."""
+    if not shard_count or shard_count <= 1:
+        return entries
+    size = -(-len(entries) // shard_count)          # ceil division - last shard may be smaller
+    start = shard_index * size
+    return entries[start:start + size]
+
+
 def run(root=None, limit_symbols=None, limit_sessions=None, apply_gates=True, equity=10_000.0,
-       out_dir=None):
+       out_dir=None, shard_index=None, shard_count=None):
     """`out_dir` checkpoints each symbol's result to disk as it finishes - REQUIRED to
     survive the tool's own background time limits, which kill the process outright with
     nothing to catch it. A symbol whose checkpoint already exists is loaded from disk
     instead of replayed, so a killed run resumes from where it stopped rather than losing
     everything and starting over. Delete the `checkpoints` folder to force a clean rerun -
     there is no staleness check, because nothing else writes there.
+
+    `shard_index`/`shard_count` split --symbols across independent OS processes (this
+    function has no cross-symbol state, so there is nothing to coordinate) - each needs
+    its OWN `out_dir`, since checkpoint filenames are per-symbol, not per-shard.
     """
     root = root or config.PARQUET_DIR
     specs = dataset.load_specs(root)
@@ -194,6 +209,8 @@ def run(root=None, limit_symbols=None, limit_sessions=None, apply_gates=True, eq
     entries = [row for row in universe if catalog.get(row["symbol"])]
     if limit_symbols:
         entries = entries[:limit_symbols]
+    if shard_count:
+        entries = _shard(entries, shard_index, shard_count)
 
     all_rows, all_rejects, all_timings = [], {}, []
     started = time.time()
@@ -267,6 +284,11 @@ def main(argv=None):
     parser.add_argument("--max-distance", type=float, default=None,
                         help="override OFR_ENTRY_MAX_DISTANCE_ATR for this run")
     parser.add_argument("--no-gates", action="store_true")
+    parser.add_argument("--shard-index", type=int, default=None,
+                        help="0-based: this process's slice of --symbols")
+    parser.add_argument("--shard-count", type=int, default=None,
+                        help="total shards --symbols is split across - each shard needs "
+                             "its own --out")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -277,9 +299,12 @@ def main(argv=None):
     if args.max_distance is not None:
         config.OFR_ENTRY_MAX_DISTANCE_ATR = args.max_distance
         log.info("OFR_ENTRY_MAX_DISTANCE_ATR overridden to %s", args.max_distance)
+    if args.shard_count and args.shard_index is None:
+        raise SystemExit("--shard-count needs --shard-index")
 
     rows, rejects, timings = run(root=args.root, limit_symbols=args.symbols,
                                  limit_sessions=args.sessions, apply_gates=not args.no_gates,
+                                 shard_index=args.shard_index, shard_count=args.shard_count,
                                  out_dir=args.out)
 
     os.makedirs(args.out, exist_ok=True)
