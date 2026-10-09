@@ -886,6 +886,40 @@ class WeeklyPocDistanceAtrTests(unittest.TestCase):
         self.assertIsNone(base.weekly_poc_distance_atr(levels, 102.0, atr=None))
 
 
+class WeeklyAndVwapBothOpposeTests(unittest.TestCase):
+    """Validated 2026-10-09 against 560 pooled S4-OFR trades - see the function's
+    own docstring for the numbers. A stronger, separate veto from the 6-vote
+    composite: that composite alone does not catch this population (60/126 of
+    these trades still had the composite agreeing, 66 more neutral)."""
+
+    def test_both_readings_opposing_a_buy_vetoes_it(self):
+        # weekly_distance > 0 votes BUY, dev_vwap_z > 0 votes SELL - so a BUY here
+        # needs weekly_distance < 0 and dev_vwap_z > 0 to have both oppose it.
+        self.assertTrue(base.weekly_and_vwap_both_oppose(-1.0, 0.5, "BUY"))
+
+    def test_both_readings_opposing_a_sell_vetoes_it(self):
+        self.assertTrue(base.weekly_and_vwap_both_oppose(1.0, -0.5, "SELL"))
+
+    def test_both_readings_supporting_the_trade_does_not_veto(self):
+        self.assertFalse(base.weekly_and_vwap_both_oppose(1.0, -0.5, "BUY"))
+        self.assertFalse(base.weekly_and_vwap_both_oppose(-1.0, 0.5, "SELL"))
+
+    def test_the_two_readings_disagreeing_with_each_other_does_not_veto(self):
+        """Weekly says BUY, VWAP says SELL (or vice versa) - no shared opinion to
+        veto with, regardless of which side the trade is on."""
+        self.assertFalse(base.weekly_and_vwap_both_oppose(1.0, 0.5, "BUY"))
+        self.assertFalse(base.weekly_and_vwap_both_oppose(1.0, 0.5, "SELL"))
+
+    def test_either_reading_missing_does_not_veto(self):
+        self.assertFalse(base.weekly_and_vwap_both_oppose(None, 0.5, "BUY"))
+        self.assertFalse(base.weekly_and_vwap_both_oppose(-1.0, None, "BUY"))
+        self.assertFalse(base.weekly_and_vwap_both_oppose(None, None, "BUY"))
+
+    def test_either_reading_flat_does_not_veto(self):
+        self.assertFalse(base.weekly_and_vwap_both_oppose(0.0, 0.5, "BUY"))
+        self.assertFalse(base.weekly_and_vwap_both_oppose(-1.0, 0.0, "BUY"))
+
+
 class CostInRTests(unittest.TestCase):
     """Fees expressed in R - the only way they are comparable across trades."""
 

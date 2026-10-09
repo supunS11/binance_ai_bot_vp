@@ -137,6 +137,7 @@ class RejectReason(str, Enum):
     INVALIDATED = "INVALIDATED"
     ENTRY_TOO_FAR = "ENTRY_TOO_FAR"
     BIAS_OPPOSED = "BIAS_OPPOSED"
+    WEEKLY_VWAP_OPPOSED = "WEEKLY_VWAP_OPPOSED"
     ENTRY_NOT_PASSIVE = "ENTRY_NOT_PASSIVE"
     SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
     FUNDING_WINDOW = "FUNDING_WINDOW"
@@ -376,6 +377,32 @@ def weekly_poc_distance_atr(weekly_levels, price, atr):
     if weekly_levels is None or not atr or atr <= 0:
         return None
     return (price - weekly_levels.poc_price) / atr
+
+
+def weekly_and_vwap_both_oppose(weekly_distance, dev_vwap_z, side):
+    """True when the weekly-POC level check and today's own live VWAP check agree
+    with EACH OTHER but both disagree with `side` - a stronger, separate veto from
+    the 6-vote composite in profile/bias.py.
+
+    Validated 2026-10-09 against 560 pooled real S4-OFR trades (calibration/
+    pooled_with_dev_vwap.csv): this population is 126/560 (22.5%) at 23.8% win /
+    -0.261R mean / -32.93R total. Removing it takes the WHOLE corpus from -14.49R
+    to +18.44R total (33.9% -> 36.9% win). Not caught by the existing composite
+    bias filter: of these 126 trades, 60 still had the full 6-vote composite
+    AGREEING with the trade and 66 more were NEUTRAL - the other four, older votes
+    outvoted these two every time, which is why this is checked on its own rather
+    than given more weight inside the tally.
+
+    False (no veto) unless both readings exist and are non-zero - a flat read is
+    "nothing to say", not an agreement to oppose.
+    """
+    if weekly_distance is None or dev_vwap_z is None:
+        return False
+    if weekly_distance == 0 or dev_vwap_z == 0:
+        return False
+    weekly_vote = "BUY" if weekly_distance > 0 else "SELL"
+    vwap_vote = "BUY" if dev_vwap_z < 0 else "SELL"
+    return weekly_vote == vwap_vote and weekly_vote != side
 
 
 # --------------------------------------------------------------- targeting

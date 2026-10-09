@@ -42,7 +42,8 @@ from profile import bias as bias_mod
 from profile.va_hvn import touch_count
 from setups import orderflow_reversal as ofr
 from setups.base import (MARKET_ENTRY, Candidate, RejectReason, SetupState, reject,
-                         target_candidates, vwap_zscore, weekly_poc_distance_atr)
+                         target_candidates, vwap_zscore, weekly_and_vwap_both_oppose,
+                         weekly_poc_distance_atr)
 
 log = logging.getLogger(__name__)
 
@@ -274,6 +275,17 @@ class ZoneWatch:
         # mean-reversion read (below today's VWAP) rather than the trend read
         # above. Reuses S1-POC/S2-VAR's existing helper/attribute name.
         dev_vwap_z = vwap_zscore(ctx.dev_levels, entry)
+
+        # A stronger, separate veto than the composite below - see
+        # weekly_and_vwap_both_oppose's own docstring for the validation. Checked
+        # here (not only folded into session_bias) because the full composite does
+        # not catch this population on its own: the other four, older votes can
+        # outvote these two even when they agree with each other.
+        if config.DOUBLE_VOTE_VETO_ENABLED and weekly_and_vwap_both_oppose(
+                weekly_poc_distance, dev_vwap_z, side):
+            rejections.append(reject(RejectReason.WEEKLY_VWAP_OPPOSED, ofr.SETUP,
+                                     ctx.symbol, direction=side, level_price=zone.center))
+            return None
 
         bias_label, bias_strength = bias_mod.session_bias(ctx)
 

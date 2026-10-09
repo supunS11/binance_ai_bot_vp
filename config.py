@@ -267,6 +267,15 @@ ZONE_WATCH_CLOSE_DELAY_SECONDS = env_int("ZONE_WATCH_CLOSE_DELAY_SECONDS", 2)
 # Profile-shape bias for S4: on a BULL or BEAR day, reversals against the bias are refused
 # (see profile/shape.py day_bias). A market opinion, so OFF until replay validates it.
 BIAS_FILTER_ENABLED = env_bool("BIAS_FILTER_ENABLED", "True")
+# A stronger, separate veto: refuse a trade when the weekly-POC level check and today's
+# own live VWAP check agree with EACH OTHER but both oppose the trade - see
+# setups.base.weekly_and_vwap_both_oppose's own docstring for the validation (560 pooled
+# S4-OFR trades: this population is 126/560 at 23.8% win / -0.261R mean, removing it takes
+# the whole corpus from -14.49R to +18.44R total). Checked separately from
+# BIAS_FILTER_ENABLED's 6-vote composite because that composite alone does not catch this
+# population - 60 of the 126 trades still had the composite agreeing with the trade and 66
+# more neutral, outvoted by the other four, older signals.
+DOUBLE_VOTE_VETO_ENABLED = env_bool("DOUBLE_VOTE_VETO_ENABLED", "True")
 VA_HVN_STABILITY_TOL_BINS = env_float("VA_HVN_STABILITY_TOL_BINS", 1.0)
 HVN_PCT = env_float("HVN_PCT", 0.70)
 LVN_PCT = env_float("LVN_PCT", 0.35)

@@ -360,6 +360,59 @@ class BiasAtEntryTests(unittest.TestCase):
         self.assertEqual(entries[0].direction, "BUY")
 
 
+class DoubleVoteVetoTests(unittest.TestCase):
+    """A stronger, separate veto from the composite bias filter above - see
+    setups.base.weekly_and_vwap_both_oppose's own docstring for the validation.
+    BIAS_FILTER_ENABLED is off throughout so these tests isolate the new check."""
+
+    def setUp(self):
+        self.patches = [
+            patch.object(config, "S4_OFR_ENABLED", True),
+            patch.object(config, "BIAS_FILTER_ENABLED", False),
+            patch.object(config, "DOUBLE_VOTE_VETO_ENABLED", True),
+            patch.object(config, "OFR_VISIT_RULE", "any"),
+            patch.object(config, "OFR_USE_RECORDED_FLOW", False),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_both_votes_opposing_the_buy_refuses_it(self):
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        # zone.center (~99.1) sits well BELOW this POC -> a SELL vote.
+        weekly_levels = SimpleNamespace(poc_price=102.0)
+        # entry (~99.17) sits well ABOVE this VWAP -> a SELL vote too.
+        dev_levels = SimpleNamespace(vwap=95.0, vwap_upper_1sd=95.5)
+        entries, rejects = _drive(zone_watch.ZoneWatch(), candles,
+                                  weekly_levels=weekly_levels, dev_levels=dev_levels)
+
+        self.assertEqual(entries, [])
+        self.assertEqual([r.reason for r in rejects], [RejectReason.WEEKLY_VWAP_OPPOSED])
+
+    def test_only_one_reading_opposing_still_enters(self):
+        """No shared opinion between the two readings to veto with."""
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        weekly_levels = SimpleNamespace(poc_price=102.0)   # SELL vote, alone
+        entries, rejects = _drive(zone_watch.ZoneWatch(), candles, weekly_levels=weekly_levels)
+
+        self.assertEqual(rejects, [])
+        self.assertEqual(len(entries), 1)
+
+    def test_disabling_the_flag_lets_the_trade_through(self):
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        weekly_levels = SimpleNamespace(poc_price=102.0)
+        dev_levels = SimpleNamespace(vwap=95.0, vwap_upper_1sd=95.5)
+        with patch.object(config, "DOUBLE_VOTE_VETO_ENABLED", False):
+            entries, rejects = _drive(zone_watch.ZoneWatch(), candles,
+                                      weekly_levels=weekly_levels, dev_levels=dev_levels)
+
+        self.assertEqual(rejects, [])
+        self.assertEqual(len(entries), 1)
+
+
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         self.patch = patch.object(config, "ACTIVE_SETUPS", ["S4-OFR"])
