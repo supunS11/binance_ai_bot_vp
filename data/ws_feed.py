@@ -102,7 +102,17 @@ class KlineFeed:
             except RuntimeError:
                 pass
         if self._thread is not None:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=config.WS_SHUTDOWN_TIMEOUT_SECONDS + 5)
+            if self._thread.is_alive():
+                # _main()'s own shutdown is bounded by WS_SHUTDOWN_TIMEOUT_SECONDS,
+                # so reaching this means the thread is stuck somewhere OUTSIDE
+                # that bound (or stop() was called before the thread ever got
+                # that far) - proceeding anyway (set_symbols always has) but
+                # LOUDLY, because silently losing track of a thread holding a
+                # live socket is exactly what let this go unnoticed before.
+                log.warning("kline feed thread did not stop in time - abandoning "
+                           "it; it will keep running until its own shutdown "
+                           "eventually completes")
         self._thread = None
         self._loop = None
         self._stop_event = None
@@ -110,11 +120,19 @@ class KlineFeed:
         self._sockets = {}
 
     def _run(self):
-        self._loop = asyncio.new_event_loop()
+        # LOCAL variable, deliberately not self._loop, in both the creation and
+        # the close below. set_symbols() can start a NEW thread (and overwrite
+        # self._loop with ITS loop) while this thread is still finishing up, if
+        # the previous stop() didn't actually confirm this thread had exited -
+        # reading self._loop in the finally block would then close whichever
+        # loop happens to be newest, which is a RUNNING loop in another thread.
+        # Each thread must only ever close the loop it itself created.
+        loop = asyncio.new_event_loop()
+        self._loop = loop
         try:
-            self._loop.run_until_complete(self._main(self._symbols))
+            loop.run_until_complete(self._main(self._symbols))
         finally:
-            self._loop.close()
+            loop.close()
 
     async def _main(self, symbols):
         self._stop_event = asyncio.Event()
@@ -124,7 +142,20 @@ class KlineFeed:
         await self._stop_event.wait()
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # BOUNDED, so a task that does not actually respond to cancellation -
+        # a hung websocket close, a swallowed CancelledError - cannot keep this
+        # coroutine (and so run_until_complete, and so this whole thread) alive
+        # forever. An unbounded wait here is what turns one stuck socket into a
+        # thread leak that quietly holds a real connection open indefinitely.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=config.WS_SHUTDOWN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            still_running = sum(1 for task in tasks if not task.done())
+            log.warning("kline feed: %d task(s) still running %ss after cancel - "
+                       "giving up on them so the loop can still close",
+                       still_running, config.WS_SHUTDOWN_TIMEOUT_SECONDS)
 
     async def _socket(self, index, symbols):
         url = market_base() + "/".join(s.lower() + STREAM_SUFFIX for s in symbols)

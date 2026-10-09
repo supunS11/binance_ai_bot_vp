@@ -150,6 +150,15 @@ WS_SYMBOLS_PER_SOCKET = env_int("WS_SYMBOLS_PER_SOCKET", 100)
 WS_STALE_SECONDS = env_float("WS_STALE_SECONDS", 45.0)
 WS_WATCHDOG_INTERVAL_SECONDS = env_float("WS_WATCHDOG_INTERVAL_SECONDS", 15.0)
 WS_RESTART_COOLDOWN_SECONDS = env_float("WS_RESTART_COOLDOWN_SECONDS", 30.0)
+# Cap on how long KlineFeed._main() waits for its tasks to finish cancelling once
+# stop() fires, BEFORE the owning thread tries to close its event loop (see
+# ws_feed.py's _run/_main). Without this cap, a socket close that never returns -
+# a stuck TCP teardown, a cancellation a task swallows and ignores - leaves that
+# thread's run_until_complete() blocked forever: a leaked thread holding a real
+# connection, repeated every time set_symbols() restarts the feed. Found 2026-10-09
+# after a thread death ("Cannot close a running event loop") pointed at set_symbols
+# restarting the feed faster than the previous thread could shut down.
+WS_SHUTDOWN_TIMEOUT_SECONDS = env_float("WS_SHUTDOWN_TIMEOUT_SECONDS", 10.0)
 
 
 # ------------------------------------------------------------- profile engine

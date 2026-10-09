@@ -1,3 +1,6 @@
+import asyncio
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -89,6 +92,103 @@ class FeedDefaultsTests(unittest.TestCase):
             feed._symbols = ("AAAUSDT",)
             feed.set_symbols(["AAAUSDT"])
         stop.assert_not_called()
+
+
+class ShutdownRaceTests(unittest.TestCase):
+    """2026-10-09: a kline-feed thread died with "Cannot close a running event
+    loop". Root cause: _run()'s finally block read self._loop rather than the
+    loop IT created, so a thread whose shutdown overran set_symbols()'s restart
+    could end up closing a NEWER thread's (running) loop instead of its own."""
+
+    def test_run_closes_its_own_loop_even_if_self_loop_is_reassigned_mid_shutdown(self):
+        feed = KlineFeed(lambda symbol, candle: None)
+        release = threading.Event()
+
+        async def _blocking_main(symbols):
+            # Stand-in for a _main() still finishing shutdown - held open until
+            # the test reassigns self._loop out from under it, exactly as a
+            # second set_symbols() starting a new thread would.
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, release.wait)
+
+        with patch.object(feed, "_main", side_effect=_blocking_main):
+            thread = threading.Thread(target=feed._run)
+            thread.start()
+            for _ in range(200):
+                if feed._loop is not None:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("feed._run() never assigned a loop")
+
+            original_loop = feed._loop
+            impostor_loop = asyncio.new_event_loop()
+            impostor_thread = threading.Thread(target=impostor_loop.run_forever)
+            impostor_thread.start()
+            feed._loop = impostor_loop   # the real race: a newer thread's loop
+
+            try:
+                release.set()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+                self.assertTrue(
+                    original_loop.is_closed(),
+                    "_run must close the loop IT created, not whatever self._loop "
+                    "happens to point to by the time it finishes")
+                self.assertFalse(
+                    impostor_loop.is_closed(),
+                    "a newer thread's loop must survive an older thread's "
+                    "delayed shutdown, not get force-closed out from under it")
+            finally:
+                impostor_loop.call_soon_threadsafe(impostor_loop.stop)
+                impostor_thread.join(timeout=5)
+                impostor_loop.close()
+
+
+class BoundedShutdownTests(unittest.TestCase):
+    """A task that does not respond to cancellation (a stuck socket close, a
+    swallowed CancelledError) must not be able to keep _main() - and so the
+    whole feed thread - alive forever."""
+
+    def test_main_gives_up_on_an_uncooperative_task_within_the_timeout(self):
+        feed = KlineFeed(lambda symbol, candle: None)
+
+        async def _stubborn(*args, **kwargs):
+            # Ignores exactly ONE cancellation - enough to blow through _main's
+            # own (short, patched) shutdown timeout - then actually stops on a
+            # second, so asyncio.run()'s own end-of-test cleanup (which cancels
+            # whatever is still pending) does not itself hang forever.
+            ignored_once = False
+            while True:
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    if ignored_once:
+                        raise
+                    ignored_once = True
+
+        async def scenario():
+            with patch.object(feed, "_socket", side_effect=_stubborn), \
+                 patch.object(feed, "_watchdog", side_effect=_stubborn), \
+                 patch.object(config, "WS_SHUTDOWN_TIMEOUT_SECONDS", 0.2):
+                main_task = asyncio.ensure_future(feed._main(["BTCUSDT"]))
+                for _ in range(200):
+                    if feed._stop_event is not None:
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    self.fail("_main never created its stop event")
+                feed._stop_event.set()
+                started = time.monotonic()
+                await asyncio.wait_for(main_task, timeout=2.0)
+                return time.monotonic() - started
+
+        elapsed = asyncio.run(scenario())
+        self.assertLess(elapsed, 1.0,
+                       "_main must give up on an uncooperative task within "
+                       "WS_SHUTDOWN_TIMEOUT_SECONDS, not hang until the "
+                       "surrounding test's own timeout")
 
 
 if __name__ == "__main__":
