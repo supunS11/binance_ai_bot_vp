@@ -75,6 +75,19 @@ RETRYABLE_CODES = {
     -1003,  # too many requests
     -1007,  # timeout waiting for backend
     -1021,  # timestamp outside recvWindow (offset is re-synced first)
+    # -4120 ("Order type not supported for this endpoint. Please use the
+    # Algo Order API endpoints instead.") is the venue's historical error for
+    # placing a conditional order through /fapi/v1/order - a caller bug this
+    # client does not have, since new_algo_order() always posts to
+    # /fapi/v1/algoOrder (see its docstring). Found 2026-10-09: it still
+    # arrives, intermittently and for varying symbols, from THAT endpoint,
+    # which means the venue is reusing this code for some other, undocumented
+    # rejection on its Algo Order service. Until that is understood, treat it
+    # as transient rather than a caller bug - place_stop()'s only alternative
+    # on failure is to close the position at a realised loss, and a position
+    # is not yet naked while this retries, so the cost of being wrong about
+    # "transient" is a few seconds, not a trade.
+    -4120,
 }
 
 
