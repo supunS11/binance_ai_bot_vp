@@ -19,6 +19,12 @@ sizing or target work but never itself a reason to enter or refuse:
             defending it, both read over the whole base once gate 2 fires - "repeated
             defense", not a single instant. UNAVAILABLE (no recorder coverage) never
             counts as present.
+  modifier  LEVEL SIGNIFICANCE: the zone's distance from the separate weekly composite's
+            POC, in ATR (weekly_poc_distance_atr below) - every zone here is already a
+            prior SESSION level (see orderflow_reversal's module docstring); this asks
+            whether it is ALSO close to a level the auction has agreed on across more
+            than one session, rather than a one-day print. Recorded, not gated, same as
+            the other modifiers above, pending validation against real outcomes.
 
 From the first touch of a zone, every closed 1-minute candle is checked until one of two
 things happens: a close beyond the zone on the side the trade is against (the watch ends
@@ -36,7 +42,7 @@ from profile import bias as bias_mod
 from profile.va_hvn import touch_count
 from setups import orderflow_reversal as ofr
 from setups.base import (MARKET_ENTRY, Candidate, RejectReason, SetupState, reject,
-                         target_candidates)
+                         target_candidates, weekly_poc_distance_atr)
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +260,16 @@ class ZoneWatch:
         (tp1_kind, tp1), (tp2_kind, tp2) = ofr._target_ladder(
             entry, side, abs(entry - stop), levels, ctx.naked_pocs, levels.hvns, prior_extreme)
 
+        # LEVEL SIGNIFICANCE, recorded only (same "measure before gate" discipline as
+        # CVD/STACKED/RESTING above). zone.center is always a PRIOR SESSION level
+        # already (see orderflow_reversal's module docstring) - this asks whether
+        # that level is ALSO close to the separate weekly composite's POC, i.e.
+        # tested across more than one session rather than a one-day print. Reuses
+        # the same helper and attribute name S1-POC/S2-VAR already record this
+        # under, so research/replay.py needs no change to start seeing it for
+        # S4-OFR too.
+        weekly_poc_distance = weekly_poc_distance_atr(ctx.weekly_levels, zone.center, ctx.atr)
+
         bias_label, bias_strength = bias_mod.session_bias(ctx)
 
         # Re-check here, not only at watch-start: the base can run long enough for the
@@ -303,6 +319,7 @@ class ZoneWatch:
                 "day_bias": bias_label,
                 "bias_strength": bias_strength,
                 "dev_shape_label": ctx.dev_shape.label if ctx.dev_shape is not None else None,
+                "weekly_poc_distance_atr": weekly_poc_distance,
                 "target_candidates": target_candidates(
                     entry, side, levels, naked_pocs=ctx.naked_pocs, hvns=levels.hvns,
                     prior_extreme=prior_extreme),

@@ -50,21 +50,21 @@ def _absorbed_then(extra):
     return _candles(_base() + [_arrival(), _absorb(), _prev(), _follow()] + extra)
 
 
-def _ctx(candles, index):
+def _ctx(candles, index, weekly_levels=None):
     return SimpleNamespace(
         symbol=SYMBOL, session_id="2026-01-01", as_of=candles[index].close_time, atr=1.0,
         session_candles=tuple(candles[:index + 1]), prior_levels=_Levels(),
         prior_profile=_Profile(), naked_pocs=(), dev_levels=None, dev_shape=None,
         prior_shape=None, migration=None, open_relationship=None,
-        maturity={"mature": False},
+        maturity={"mature": False}, weekly_levels=weekly_levels,
         spec=None, mark_price=0.0, last_price=0.0, profile_row=lambda: {},
     )
 
 
-def _drive(watch, candles):
+def _drive(watch, candles, weekly_levels=None):
     entries, rejects = [], []
     for index in range(len(candles)):
-        candidate, rejections = watch.observe(_ctx(candles, index))
+        candidate, rejections = watch.observe(_ctx(candles, index, weekly_levels=weekly_levels))
         rejects.extend(rejections)
         if candidate is not None:
             entries.append(candidate)
@@ -106,6 +106,25 @@ class ZoneWatchTests(unittest.TestCase):
         # what a genuinely sustained approach records - recorded only, never a gate.
         self.assertEqual(candidate.attributes["approach_persistence"],
                          config.OFR_APPROACH_PERSISTENCE_MAX_BARS)
+
+    def test_weekly_poc_distance_atr_is_recorded_against_the_zone_being_tested(self):
+        """LEVEL SIGNIFICANCE modifier: is the (already prior-session) zone ALSO
+        close to the separate weekly composite's POC - recorded, not gated."""
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        weekly_levels = SimpleNamespace(poc_price=97.0)
+        entries, _ = _drive(zone_watch.ZoneWatch(), candles, weekly_levels=weekly_levels)
+
+        candidate = entries[0]
+        # atr=1.0 in this fixture, so ATR-normalised distance equals the raw gap.
+        self.assertAlmostEqual(candidate.attributes["weekly_poc_distance_atr"],
+                               candidate.level_price - 97.0)
+
+    def test_weekly_poc_distance_atr_is_none_without_a_weekly_bundle(self):
+        """A fresh listing with no completed prior calendar week - not an error."""
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        entries, _ = _drive(zone_watch.ZoneWatch(), candles)
+
+        self.assertIsNone(entries[0].attributes["weekly_poc_distance_atr"])
 
     def test_gate_1_holding_without_a_structural_break_does_not_enter(self):
         candles = _absorbed_then([_minute(99.1, 99.14, 99.1, 99.1, 5.0, 2.5)])
