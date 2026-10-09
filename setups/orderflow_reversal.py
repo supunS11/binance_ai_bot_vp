@@ -313,9 +313,24 @@ def detect(ctx):
     return reject(reason, SETUP, ctx.symbol, detail=",".join(sorted(set(rejected))))
 
 
-def _target_ladder(entry, side, risk, levels, naked_pocs, hvns, prior_extreme):
+def _target_ladder(entry, side, risk, levels, hvns, prior_extreme):
     """The plan's target priority list: the first level on the trade's side that clears
-    OFR_TP_MIN_R. Returns ((kind, price) for TP1, (kind, price) for TP2 or (None, None))."""
+    OFR_TP_MIN_R. Returns ((kind, price) for TP1, (kind, price) for TP2 or (None, None)).
+
+    NO NAKED-POC STAGE, DELIBERATELY. Theory says an untested naked POC should be a
+    strong target (unfinished business), but measured against 560 real S4-OFR trades
+    it was the single worst-performing target kind by a wide margin (22.4% win,
+    -0.256R mean, -34R total - more than double the whole system's net loss on its
+    own), because it is typically the FARTHEST available level (median ~3.85R vs
+    ~2R for everything else) and sat ahead of closer, better-performing levels
+    (priorExtreme, POC, VAH/VAL) in this same priority order. Removing it entirely
+    beat both de-prioritising it and always picking the nearest eligible level, on
+    the same data. Dropping the stage never reduces how many trades are taken (target
+    selection happens after every entry gate) and, measured on the full corpus,
+    increased winning trades (188 -> 196 of 560) with zero trades moving from a win
+    to a loss - only STOP -> TARGET, never the reverse. See profile/composite.py for
+    what a naked POC is; this does not change naked-POC tracking itself, only stops
+    using it as an S4-OFR target."""
     def clears(price):
         if price is None or price != price:
             return False
@@ -331,7 +346,6 @@ def _target_ladder(entry, side, risk, levels, naked_pocs, hvns, prior_extreme):
         ("HVN", nearest([node.peak_price for node in hvns if not node.is_poc])),
         ("POC", levels.poc_price if clears(levels.poc_price) else None),
         ("VAH" if side == "BUY" else "VAL", opposite_va if clears(opposite_va) else None),
-        ("nPOC", nearest(naked_pocs or [])),
         ("priorExtreme", prior_extreme if clears(prior_extreme) else None),
     ]
     picks = [(kind, price) for kind, price in stages if price is not None]
@@ -377,7 +391,7 @@ def _candidate(ctx, zone, side, bars, absorb_index, present, tier, atr15, first_
     levels = ctx.prior_levels
     prior_extreme = ctx.prior_profile.high if side == "BUY" else ctx.prior_profile.low
     (tp1_kind, tp1), (tp2_kind, tp2) = _target_ladder(
-        entry, side, risk, levels, ctx.naked_pocs, levels.hvns, prior_extreme)
+        entry, side, risk, levels, levels.hvns, prior_extreme)
 
     signals = {name: (name in present) for name in ("ABS", "CVD", "FLIP")}
     for name in ("STACKED", "RESTING"):

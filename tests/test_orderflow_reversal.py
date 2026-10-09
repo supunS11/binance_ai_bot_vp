@@ -263,29 +263,39 @@ class ApproachPersistenceTests(unittest.TestCase):
 class TargetLadderTests(unittest.TestCase):
     def test_nearest_hvn_that_clears_the_minimum_r_is_tp1(self):
         levels = _levels(poc=101.3, vah=102.5, val=99.0, hvns=[_node(101.5), _node(100.9)])
-        (kind, price), _ = ofr._target_ladder(100.0, "BUY", 1.0, levels, [], levels.hvns, 103.0)
+        (kind, price), _ = ofr._target_ladder(100.0, "BUY", 1.0, levels, levels.hvns, 103.0)
         self.assertEqual((kind, price), ("HVN", 101.5))
 
     def test_hvn_below_the_minimum_r_falls_through_to_the_poc(self):
         levels = _levels(poc=101.3, vah=102.5, val=99.0, hvns=[_node(100.9)])
-        (kind, price), _ = ofr._target_ladder(100.0, "BUY", 1.0, levels, [], levels.hvns, 103.0)
+        (kind, price), _ = ofr._target_ladder(100.0, "BUY", 1.0, levels, levels.hvns, 103.0)
         self.assertEqual((kind, price), ("POC", 101.3))
 
     def test_no_structural_level_clears_falls_back_to_two_r(self):
         levels = _levels(poc=100.5, vah=100.8, val=99.0)
-        (kind, price), tp2 = ofr._target_ladder(100.0, "BUY", 1.0, levels, [], [], 100.6)
+        (kind, price), tp2 = ofr._target_ladder(100.0, "BUY", 1.0, levels, [], 100.6)
         self.assertEqual((kind, price), ("fixed2R", 102.0))
         self.assertEqual(tp2, (None, None))
 
     def test_tp2_is_the_next_level_beyond_tp1(self):
         levels = _levels(poc=101.3, vah=102.5, val=99.0, hvns=[_node(101.5)])
-        _, (kind, price) = ofr._target_ladder(100.0, "BUY", 1.0, levels, [], levels.hvns, 103.0)
+        _, (kind, price) = ofr._target_ladder(100.0, "BUY", 1.0, levels, levels.hvns, 103.0)
         self.assertEqual((kind, price), ("VAH", 102.5))
 
     def test_sell_side_mirrors_the_buy_side(self):
         levels = _levels(poc=98.7, vah=101.0, val=97.5, hvns=[_node(98.5)])
-        (kind, price), _ = ofr._target_ladder(100.0, "SELL", 1.0, levels, [], levels.hvns, 97.0)
+        (kind, price), _ = ofr._target_ladder(100.0, "SELL", 1.0, levels, levels.hvns, 97.0)
         self.assertEqual((kind, price), ("HVN", 98.5))
+
+    def test_naked_poc_is_not_a_target_candidate(self):
+        """Measured 2026-10-09 against 560 real S4-OFR trades: the single worst
+        target kind (22.4% win, -34R total) - see _target_ladder's own docstring.
+        A naked POC that would otherwise be nearest/eligible must be skipped, not
+        chosen, even with nothing else at all in its way."""
+        levels = _levels(poc=100.5, vah=100.8, val=99.0)
+        (kind, price), _ = ofr._target_ladder(100.0, "BUY", 1.0, levels, [], 100.6)
+        self.assertNotEqual(kind, "nPOC")
+        self.assertEqual((kind, price), ("fixed2R", 102.0))
 
 
 class PlanEntryStopTests(unittest.TestCase):

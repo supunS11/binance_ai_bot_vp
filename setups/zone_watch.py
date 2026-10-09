@@ -259,7 +259,7 @@ class ZoneWatch:
         levels = ctx.prior_levels
         prior_extreme = ctx.prior_profile.high if side == "BUY" else ctx.prior_profile.low
         (tp1_kind, tp1), (tp2_kind, tp2) = ofr._target_ladder(
-            entry, side, abs(entry - stop), levels, ctx.naked_pocs, levels.hvns, prior_extreme)
+            entry, side, abs(entry - stop), levels, levels.hvns, prior_extreme)
 
         # LEVEL SIGNIFICANCE, recorded only (same "measure before gate" discipline as
         # CVD/STACKED/RESTING above). zone.center is always a PRIOR SESSION level
