@@ -26,16 +26,21 @@ def _open(label, side=""):
 
 
 def _ctx(prior_shape=None, migration=None, open_relationship=None, dev_shape=None,
-        mature=False, weekly_levels=None, last_price=0.0, atr=1.0):
+        mature=False, weekly_levels=None, last_price=0.0, atr=1.0, dev_levels=None):
     return SimpleNamespace(
         prior_shape=prior_shape, migration=migration, open_relationship=open_relationship,
         dev_shape=dev_shape, maturity={"mature": mature},
         weekly_levels=weekly_levels, last_price=last_price, atr=atr,
+        dev_levels=dev_levels,
     )
 
 
 def _weekly(poc_price):
     return SimpleNamespace(poc_price=poc_price)
+
+
+def _dev_levels(vwap, upper_1sd):
+    return SimpleNamespace(vwap=vwap, vwap_upper_1sd=upper_1sd)
 
 
 class SessionBiasTests(unittest.TestCase):
@@ -82,6 +87,14 @@ class SessionBiasTests(unittest.TestCase):
                    weekly_levels=_weekly(90.0), last_price=100.0)
         self.assertEqual(session_bias(ctx), ("BULL", 5))
 
+    def test_all_six_signals_can_agree(self):
+        ctx = _ctx(prior_shape=_shape("P"), migration=_migration("HIGHER", 0.5),
+                   open_relationship=_open("OUTSIDE_VALUE_INSIDE_RANGE", "ABOVE"),
+                   dev_shape=_shape("P"), mature=True,
+                   weekly_levels=_weekly(90.0), last_price=100.0,
+                   dev_levels=_dev_levels(vwap=110.0, upper_1sd=115.0))
+        self.assertEqual(session_bias(ctx), ("BULL", 6))
+
 
 class WeeklyPocVoteTests(unittest.TestCase):
     """Validated 2026-10-09 against 280 real S4-OFR trades - see _weekly_vote's own
@@ -110,6 +123,44 @@ class WeeklyPocVoteTests(unittest.TestCase):
         ctx = _ctx(prior_shape=_shape("b"), weekly_levels=_weekly(90.0), last_price=100.0)
         self.assertEqual(session_bias(ctx), ("NEUTRAL", 1),
                          "one BEAR vs one BULL is a tie, not a win for either side")
+
+
+class DevVwapVoteTests(unittest.TestCase):
+    """Validated 2026-10-09 against 560 pooled real S4-OFR trades (an earlier
+    n=280 pass had fallen short of significant) - see _dev_vwap_vote's own
+    docstring for the numbers. Confound-checked independent of _weekly_vote, so
+    tested on its own here too. Opposite sign convention from the weekly vote on
+    purpose: BELOW today's own VWAP votes BULL (mean-reversion), not BEAR."""
+
+    def test_price_below_todays_vwap_votes_bull(self):
+        ctx = _ctx(dev_levels=_dev_levels(vwap=110.0, upper_1sd=115.0), last_price=100.0)
+        self.assertEqual(session_bias(ctx), ("BULL", 1))
+
+    def test_price_above_todays_vwap_votes_bear(self):
+        ctx = _ctx(dev_levels=_dev_levels(vwap=90.0, upper_1sd=95.0), last_price=100.0)
+        self.assertEqual(session_bias(ctx), ("BEAR", 1))
+
+    def test_price_exactly_on_todays_vwap_casts_no_vote(self):
+        ctx = _ctx(dev_levels=_dev_levels(vwap=100.0, upper_1sd=105.0), last_price=100.0)
+        self.assertEqual(session_bias(ctx), ("NEUTRAL", 0))
+
+    def test_no_developing_vwap_yet_casts_no_vote(self):
+        """A session with no candles yet - not an error."""
+        ctx = _ctx(dev_levels=None, last_price=100.0)
+        self.assertEqual(session_bias(ctx), ("NEUTRAL", 0))
+
+    def test_a_collapsed_band_casts_no_vote(self):
+        """sigma<=0 means nothing to standardise by, not 'exactly at VWAP'."""
+        ctx = _ctx(dev_levels=_dev_levels(vwap=100.0, upper_1sd=100.0), last_price=105.0)
+        self.assertEqual(session_bias(ctx), ("NEUTRAL", 0))
+
+    def test_it_reads_opposite_to_the_weekly_vote_by_design(self):
+        """Price above the weekly POC (BULL, trend-following) but below today's own
+        VWAP (also BULL here, mean-reverting) - both read the same way in THIS
+        case, but from opposite conventions; this fixture exercises both at once."""
+        ctx = _ctx(weekly_levels=_weekly(90.0), last_price=100.0,
+                   dev_levels=_dev_levels(vwap=110.0, upper_1sd=115.0))
+        self.assertEqual(session_bias(ctx), ("BULL", 2))
 
 
 if __name__ == "__main__":

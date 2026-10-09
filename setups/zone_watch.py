@@ -42,7 +42,7 @@ from profile import bias as bias_mod
 from profile.va_hvn import touch_count
 from setups import orderflow_reversal as ofr
 from setups.base import (MARKET_ENTRY, Candidate, RejectReason, SetupState, reject,
-                         target_candidates, weekly_poc_distance_atr)
+                         target_candidates, vwap_zscore, weekly_poc_distance_atr)
 
 log = logging.getLogger(__name__)
 
@@ -270,6 +270,11 @@ class ZoneWatch:
         # S4-OFR too.
         weekly_poc_distance = weekly_poc_distance_atr(ctx.weekly_levels, zone.center, ctx.atr)
 
+        # Same discipline, today's own session instead of the weekly composite -
+        # mean-reversion read (below today's VWAP) rather than the trend read
+        # above. Reuses S1-POC/S2-VAR's existing helper/attribute name.
+        dev_vwap_z = vwap_zscore(ctx.dev_levels, entry)
+
         bias_label, bias_strength = bias_mod.session_bias(ctx)
 
         # Re-check here, not only at watch-start: the base can run long enough for the
@@ -320,6 +325,12 @@ class ZoneWatch:
                 "bias_strength": bias_strength,
                 "dev_shape_label": ctx.dev_shape.label if ctx.dev_shape is not None else None,
                 "weekly_poc_distance_atr": weekly_poc_distance,
+                # Deliberately NOT "vwap_zscore_at_level" - S1-POC/S2-VAR's existing
+                # field under that name reads the PRIOR (frozen, static) session's
+                # VWAP, a different measurement from this one (today's own live,
+                # developing VWAP). Reusing the name would silently conflate two
+                # different things under one column in any cross-setup analysis.
+                "dev_vwap_zscore_at_entry": dev_vwap_z,
                 "target_candidates": target_candidates(
                     entry, side, levels, naked_pocs=ctx.naked_pocs, hvns=levels.hvns,
                     prior_extreme=prior_extreme),

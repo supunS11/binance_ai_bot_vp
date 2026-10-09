@@ -50,21 +50,22 @@ def _absorbed_then(extra):
     return _candles(_base() + [_arrival(), _absorb(), _prev(), _follow()] + extra)
 
 
-def _ctx(candles, index, weekly_levels=None):
+def _ctx(candles, index, weekly_levels=None, dev_levels=None):
     return SimpleNamespace(
         symbol=SYMBOL, session_id="2026-01-01", as_of=candles[index].close_time, atr=1.0,
         session_candles=tuple(candles[:index + 1]), prior_levels=_Levels(),
-        prior_profile=_Profile(), naked_pocs=(), dev_levels=None, dev_shape=None,
+        prior_profile=_Profile(), naked_pocs=(), dev_levels=dev_levels, dev_shape=None,
         prior_shape=None, migration=None, open_relationship=None,
         maturity={"mature": False}, weekly_levels=weekly_levels,
         spec=None, mark_price=0.0, last_price=0.0, profile_row=lambda: {},
     )
 
 
-def _drive(watch, candles, weekly_levels=None):
+def _drive(watch, candles, weekly_levels=None, dev_levels=None):
     entries, rejects = [], []
     for index in range(len(candles)):
-        candidate, rejections = watch.observe(_ctx(candles, index, weekly_levels=weekly_levels))
+        candidate, rejections = watch.observe(
+            _ctx(candles, index, weekly_levels=weekly_levels, dev_levels=dev_levels))
         rejects.extend(rejections)
         if candidate is not None:
             entries.append(candidate)
@@ -125,6 +126,26 @@ class ZoneWatchTests(unittest.TestCase):
         entries, _ = _drive(zone_watch.ZoneWatch(), candles)
 
         self.assertIsNone(entries[0].attributes["weekly_poc_distance_atr"])
+
+    def test_dev_vwap_zscore_is_recorded_against_the_entry_price(self):
+        """Mean-reversion modifier: how many of TODAY's own VWAP sigmas the entry
+        sits from TODAY's live average - recorded, not gated. Deliberately its
+        own attribute name, not weekly_poc_distance_atr's sibling - see
+        zone_watch.py's comment on why this isn't called vwap_zscore_at_level."""
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        dev_levels = SimpleNamespace(vwap=99.0, vwap_upper_1sd=99.5)
+        entries, _ = _drive(zone_watch.ZoneWatch(), candles, dev_levels=dev_levels)
+
+        candidate = entries[0]
+        self.assertAlmostEqual(candidate.attributes["dev_vwap_zscore_at_entry"],
+                               (candidate.entry_price - 99.0) / 0.5)
+
+    def test_dev_vwap_zscore_is_none_without_a_developing_profile_yet(self):
+        """No candles in today's session yet - not an error."""
+        candles = _absorbed_then([_minute(99.1, 99.2, 99.1, 99.17, 5.0, 2.5)])
+        entries, _ = _drive(zone_watch.ZoneWatch(), candles)
+
+        self.assertIsNone(entries[0].attributes["dev_vwap_zscore_at_entry"])
 
     def test_gate_1_holding_without_a_structural_break_does_not_enter(self):
         candles = _absorbed_then([_minute(99.1, 99.14, 99.1, 99.1, 5.0, 2.5)])

@@ -75,7 +75,7 @@ TRADE_FIELDS = [
     "confirmations", "confirmation_count",
     "poc_prominence", "va_range_ratio", "acceptance_ratio", "excursion_candles",
     "value_migration", "bin_delta_normalized", "multi_bin_delta_normalized",
-    "vwap_zscore_at_level", "weekly_poc_distance_atr",
+    "vwap_zscore_at_level", "weekly_poc_distance_atr", "dev_vwap_zscore_at_entry",
     "poor_at_extreme", "excess_at_extreme",
     "stop_inside_hvn", "target_behind_hvn",
     "hvn_entry_in_zone", "hvn_nearest_atr", "hvn_confluence", "hvn_first_test",
@@ -108,6 +108,7 @@ TRADE_FIELD_TYPES = {
     "excursion_candles": int,
     "bin_delta_normalized": float, "multi_bin_delta_normalized": float,
     "vwap_zscore_at_level": float, "weekly_poc_distance_atr": float,
+    "dev_vwap_zscore_at_entry": float,
     "poor_at_extreme": int, "excess_at_extreme": int,
     "stop_inside_hvn": int, "target_behind_hvn": int,
     "hvn_entry_in_zone": int, "hvn_nearest_atr": float, "hvn_confluence": int,
@@ -369,6 +370,9 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
         # POC, in ATR. `ctx.weekly_levels` is new (scanner.frozen_weekly_bundle) -
         # None until a symbol has at least one completed prior calendar week.
         "weekly_poc_distance_atr": attributes.get("weekly_poc_distance_atr"),
+        # Today's own live VWAP, not the prior session's frozen one above - see
+        # zone_watch.py's comment on why this needs its own column name.
+        "dev_vwap_zscore_at_entry": attributes.get("dev_vwap_zscore_at_entry"),
         "poor_at_extreme": _bool_to_int(attributes.get("poor_at_extreme")),
         "excess_at_extreme": _bool_to_int(attributes.get("excess_at_extreme")),
         "stop_inside_hvn": _bool_to_int(attributes.get("stop_inside_hvn")),
