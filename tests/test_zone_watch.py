@@ -102,6 +102,10 @@ class ZoneWatchTests(unittest.TestCase):
         # redesign, which is itself the behaviour under test.
         self.assertEqual(candidate.attributes["ofr_signals"], "")
         self.assertEqual(candidate.attributes["ofr_conviction"], 0)
+        # The whole 60-bar base sits well above the zone, so the capped default is
+        # what a genuinely sustained approach records - recorded only, never a gate.
+        self.assertEqual(candidate.attributes["approach_persistence"],
+                         config.OFR_APPROACH_PERSISTENCE_MAX_BARS)
 
     def test_gate_1_holding_without_a_structural_break_does_not_enter(self):
         candles = _absorbed_then([_minute(99.1, 99.14, 99.1, 99.1, 5.0, 2.5)])

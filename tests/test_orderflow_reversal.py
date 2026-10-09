@@ -205,6 +205,54 @@ class ApproachAndStructureTests(unittest.TestCase):
         self.assertEqual(ofr.structure_break(base, zone, "BUY", 1), 99.4)
 
 
+class ApproachPersistenceTests(unittest.TestCase):
+    """How settled the approach was before the touch - recorded only, investigating
+    whether the direction call's single-candle read is too noisy against a
+    sustained run of bars already on that side."""
+
+    @staticmethod
+    def _bar(close):
+        return SimpleNamespace(close=close)
+
+    def test_a_sustained_run_above_the_zone_counts_in_full(self):
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        closed = [self._bar(99.5)] * 5 + [self._bar(99.1)]     # last bar is the touch
+        self.assertEqual(ofr.approach_persistence(closed, zone, "BUY"), 5)
+
+    def test_mirrors_for_sell_below_the_zone(self):
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        closed = [self._bar(98.5)] * 4 + [self._bar(99.1)]
+        self.assertEqual(ofr.approach_persistence(closed, zone, "SELL"), 4)
+
+    def test_the_touching_bar_itself_is_excluded_even_if_it_would_qualify(self):
+        """closed[-1] is the touch, not part of the approach - the read this
+        measures the fragility of is a single OTHER bar's close, closed[-2]."""
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        closed = [self._bar(99.5)] * 3 + [self._bar(99.6)]
+        self.assertEqual(ofr.approach_persistence(closed, zone, "BUY"), 3)
+
+    def test_only_the_run_immediately_before_the_touch_counts(self):
+        """A single bar back on the right side after a break in the run is the
+        noisy, single-candle case this exists to distinguish from a real one."""
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        closed = ([self._bar(99.5)] * 10          # a real earlier run
+                 + [self._bar(99.1)]              # breaks it - inside the zone
+                 + [self._bar(99.5)]              # the one bar the direction call reads
+                 + [self._bar(99.1)])             # the touch
+        self.assertEqual(ofr.approach_persistence(closed, zone, "BUY"), 1)
+
+    def test_capped_at_max_bars(self):
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        closed = [self._bar(99.5)] * 20 + [self._bar(99.1)]
+        self.assertEqual(ofr.approach_persistence(closed, zone, "BUY", max_bars=12), 12)
+
+    def test_defaults_to_the_config_cap(self):
+        zone = ofr.Zone("VAL", 99.0, 99.2)
+        closed = [self._bar(99.5)] * 50 + [self._bar(99.1)]
+        self.assertEqual(ofr.approach_persistence(closed, zone, "BUY"),
+                         config.OFR_APPROACH_PERSISTENCE_MAX_BARS)
+
+
 class TargetLadderTests(unittest.TestCase):
     def test_nearest_hvn_that_clears_the_minimum_r_is_tp1(self):
         levels = _levels(poc=101.3, vah=102.5, val=99.0, hvns=[_node(101.5), _node(100.9)])

@@ -81,7 +81,7 @@ TRADE_FIELDS = [
     "hvn_entry_in_zone", "hvn_nearest_atr", "hvn_confluence", "hvn_first_test",
     "ofr_tier", "ofr_signals", "ofr_zone_kind", "ofr_first_test",
     "ofr_absorb_bars_before", "ofr_signal_states", "day_bias", "dev_shape_label",
-    "ofr_visit_number", "ofr_conviction", "bias_strength",
+    "ofr_visit_number", "ofr_conviction", "bias_strength", "approach_persistence",
     "is_control", "control_of",
 ]
 
@@ -113,7 +113,7 @@ TRADE_FIELD_TYPES = {
     "hvn_entry_in_zone": int, "hvn_nearest_atr": float, "hvn_confluence": int,
     "hvn_first_test": int,
     "ofr_first_test": int, "ofr_absorb_bars_before": int, "ofr_visit_number": int,
-    "ofr_conviction": int, "bias_strength": int,
+    "ofr_conviction": int, "bias_strength": int, "approach_persistence": int,
     "tp2_price": float, "atr15": float,
     "is_control": int,
 }
@@ -329,6 +329,7 @@ def _row(candidate, ctx, entry, outcome, qv_rank, is_control=False, control_of="
         "ofr_signal_states": attributes.get("ofr_signal_states"),
         "ofr_visit_number": attributes.get("ofr_visit_number"),
         "ofr_conviction": attributes.get("ofr_conviction"),
+        "approach_persistence": attributes.get("approach_persistence"),
         "day_bias": attributes.get("day_bias"),
         "bias_strength": attributes.get("bias_strength"),
         "dev_shape_label": attributes.get("dev_shape_label"),

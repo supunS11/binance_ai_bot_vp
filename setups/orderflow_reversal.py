@@ -126,6 +126,34 @@ def approach_leg(bars, zone, max_bars):
     return bars[start:touching_from]
 
 
+def approach_persistence(closed, zone, side, max_bars=None):
+    """How many CONSECUTIVE closed 1-minute bars, immediately before the one that
+    touches the zone, already closed beyond it on the approach side - RECORDED ONLY,
+    never a gate (see zone_watch.py's own module docstring on that discipline).
+
+    THE QUESTION THIS ANSWERS. The direction call itself (zone_watch.py::_start())
+    reads a single number - whether the one bar right before the touch closed above
+    or below the zone - and treats that as "which way price was travelling." A
+    sustained run of bars already on that side is a considered, settled approach; a
+    lone bar that happens to be on the right side by one tick, with choppy bars
+    either side of it, is the single-candle read this measures the difference
+    against. Capped at max_bars because a long-dormant zone otherwise pulls in
+    unrelated history that says nothing about THIS touch.
+
+    closed[-1] is the touching bar itself and is excluded, matching approach_leg's
+    own "the leg in, not the time spent there" convention - persistence is about
+    what happened BEFORE the touch, not the touch itself.
+    """
+    max_bars = config.OFR_APPROACH_PERSISTENCE_MAX_BARS if max_bars is None else max_bars
+    count = 0
+    for bar in reversed(closed[:-1]):
+        beyond = bar.close > zone.high if side == "BUY" else bar.close < zone.low
+        if not beyond or count >= max_bars:
+            break
+        count += 1
+    return count
+
+
 def structure_break(bars, zone, side, since_index):
     """The high (BUY) or low (SELL) of the base built since `since_index` - the level a
     close must clear to say price has actually turned, rather than merely closed past one

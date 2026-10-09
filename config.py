@@ -227,6 +227,11 @@ OFR_DEV_SUPPORT_ATR = env_float("OFR_DEV_SUPPORT_ATR", 0.50)
 # divergence), capped so a zone that has been sitting untouched for hours does not pull in
 # an unrelated earlier move as if it were part of the approach.
 OFR_APPROACH_MAX_BARS = env_int("OFR_APPROACH_MAX_BARS", 12)
+# How many consecutive 1-minute closes, immediately before the touching bar, count
+# toward approach_persistence - RECORDED ONLY (see orderflow_reversal.approach_
+# persistence), investigating whether the direction call's single-candle read
+# (zone_watch.py::_start) is too noisy against what a sustained approach would be.
+OFR_APPROACH_PERSISTENCE_MAX_BARS = env_int("OFR_APPROACH_PERSISTENCE_MAX_BARS", 20)
 # Which touches of a zone can trigger S4. "any": every visit this session, each still needing
 # order-flow confirmation - the owner's choice, since true first visits are rare once a
 # previous-day profile is in use. "first": only the zone's first visit (the original rule).

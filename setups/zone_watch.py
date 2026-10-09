@@ -61,6 +61,7 @@ class _Watch:
     trigger: float = 0.0
     confirmed_ms: int = None
     approach_cvd: bool = False
+    approach_persistence: int = 0
     too_far_logged: bool = False
 
 
@@ -156,8 +157,13 @@ class ZoneWatch:
             label, _strength = bias_mod.session_bias(ctx)
             if (label == "BULL" and side == "SELL") or (label == "BEAR" and side == "BUY"):
                 return
+        # RECORDED ONLY, never a gate - see orderflow_reversal.approach_persistence.
+        # The direction call just above reads a single bar's close; this measures how
+        # settled that read actually was, for later investigation, not to refuse here.
+        persistence = ofr.approach_persistence(closed, zone, side)
         state.active[index] = _Watch(zone=zone, index=index, side=side, visits=visits,
-                                     started_ms=closed[-1].open_time)
+                                     started_ms=closed[-1].open_time,
+                                     approach_persistence=persistence)
         log.info("%s zone watch started: %s %s %s", ctx.symbol, zone.kind, side,
                  round(zone.center, 8))
 
@@ -291,6 +297,7 @@ class ZoneWatch:
                 "ofr_first_test": 1 if watch.visits == 1 else 0,
                 "ofr_visit_number": watch.visits,
                 "ofr_absorb_bars_before": None,
+                "approach_persistence": watch.approach_persistence,
                 "watch_started_ms": watch.started_ms,
                 "watch_confirmed_ms": watch.confirmed_ms,
                 "day_bias": bias_label,
@@ -354,6 +361,7 @@ def _state_to_json(state):
                 "trigger": watch.trigger,
                 "confirmed_ms": watch.confirmed_ms,
                 "approach_cvd": watch.approach_cvd,
+                "approach_persistence": watch.approach_persistence,
                 "too_far_logged": watch.too_far_logged,
             }
             for watch in state.active.values()
@@ -372,6 +380,9 @@ def _state_from_json(payload):
                        state=row["state"], absorb_index=row["absorb_index"],
                        cluster_price=row["cluster_price"], trigger=row["trigger"],
                        confirmed_ms=row["confirmed_ms"], approach_cvd=row["approach_cvd"],
+                       # .get(), not row[...]: a watch persisted by a process running
+                       # before this field existed must still restore cleanly.
+                       approach_persistence=row.get("approach_persistence", 0),
                        too_far_logged=row["too_far_logged"])
         state.active[watch.index] = watch
     return state
