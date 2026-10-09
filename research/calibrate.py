@@ -800,10 +800,62 @@ SHAPE_BIAS_FIELDS = [
     "poc_position", "va_range_ratio", "intra_poc_migration_atr",
     "bimodal", "second_mode_fraction", "valley_fraction",
     "excess_high", "excess_low", "poor_high", "poor_low",
+    "prior_migration_label", "trend_aligned",
+    "close_location", "close_location_valid",
     "next_session_id", "next_return_atr", "next_value_migration",
     "next_higher_high", "next_lower_low",
     "agrees_with_bias", "agrees_with_bias_return", "agrees_with_bias_new_extreme",
 ]
+
+# STAGE 3 - does professional Market-Profile practice's two conditions on a P/b
+# read, researched 2026-10-09, actually separate agreement from disagreement here?
+#
+#   1. TREND CONTEXT: the literature reads P/b as short-covering / long-liquidation
+#      - a temporary, weaker force - when the shape runs COUNTER to the move that
+#      preceded it (e.g. a P-day capping a prior decline), vs genuine initiative
+#      participation - durable - when the shape CONTINUES that move (a P-day
+#      extending a prior advance). day_bias() currently makes no such distinction.
+#      Operationalised as this session's OWN value-area migration relative to the
+#      session immediately before it (the same classify_migration() the NEXT-session
+#      outcome already uses, just one relation earlier) - ALIGNED when that prior
+#      move agrees with the shape's naive bias, COUNTER when it does not.
+#   2. CLOSE LOCATION: the literature also treats the read as unconfirmed unless
+#      price closed on the appropriate side of its OWN day's range (a P-day cited as
+#      needing a close above 50% of its own range to have "held" what it took).
+#      Mirrored for b at below 50% - a deliberate simplification of the b-specific
+#      "closed back toward/above the open" phrasing in favour of one symmetric,
+#      directly comparable cutoff for both shapes; see _close_location_valid.
+#
+# Both are recorded here and reported as stratifiers on the SAME primary outcome
+# already computed above - nothing about day_bias() or BIAS_FILTER_ENABLED changes
+# from this. If agreement is materially higher in the ALIGNED/VALID subset than the
+# COUNTER/INVALID one, that is evidence day_bias() should fold these in as modifiers;
+# if not, the literature's conditions do not transfer to this venue/timeframe and the
+# search for what is wrong with P/b continues elsewhere.
+
+
+def _trend_alignment(shape_label, prior_migration_label):
+    """ALIGNED (1): the shape continues the move that preceded it - the literature's
+    "genuine initiative participation" case. COUNTER (0): the shape runs against the
+    prior move - "short covering" (P) / "long liquidation" (b), the case the
+    literature treats as temporary and weaker. None when not P/b or the prior
+    relation does not resolve (first corpus session, insufficient daily history)."""
+    if shape_label not in ("P", "b") or not prior_migration_label:
+        return None
+    moved_up = prior_migration_label in _MIGRATION_AGREES_BULL
+    moved_down = prior_migration_label in _MIGRATION_AGREES_BEAR
+    if not moved_up and not moved_down:
+        return None
+    aligned = moved_up if shape_label == "P" else moved_down
+    return int(aligned)
+
+
+def _close_location_valid(shape_label, close_location):
+    """Did price close on the side of its own range the shape's bias needs to have
+    "held" - see the STAGE 3 note above. None when not P/b or unresolvable."""
+    if shape_label not in ("P", "b") or close_location is None:
+        return None
+    return int(close_location > 0.5 if shape_label == "P" else close_location < 0.5)
 
 _MIGRATION_AGREES_BULL = ("HIGHER", "OVERLAPPING_HIGHER")
 _MIGRATION_AGREES_BEAR = ("LOWER", "OVERLAPPING_LOWER")
@@ -853,6 +905,17 @@ def shape_bias_row(scanner, cache, symbol, qv_rank, session_id):
     next_start = session_start + sessions.MS_DAY
     next_end = next_start + sessions.MS_DAY
 
+    # The session immediately BEFORE session_id, as live would have had it at
+    # session_id's own open - the same frozen_bundle(symbol, session_id, as_of)
+    # call acceptance_rows already uses for exactly this relation. Fetched first,
+    # at the earliest as_of this function uses, to keep the cache's forward-only
+    # discipline the rest of this function (and acceptance_rows) already follows.
+    # Best-effort: STAGE 3's trend-context stratifier degrades to None, not a
+    # refused row, when this is unavailable (e.g. the corpus's first session).
+    cache.set_as_of(session_start)
+    cache.clear_frozen()
+    prior_bundle, _ = scanner.frozen_bundle(symbol, session_id, session_start)
+
     cache.set_as_of(next_start)
     cache.clear_frozen()
     bundle, reason = scanner.frozen_bundle(symbol, sessions.session_id(next_start),
@@ -865,6 +928,17 @@ def shape_bias_row(scanner, cache, symbol, qv_rank, session_id):
 
     bias = shape_mod.day_bias(shape)
     atr = bundle.atr
+
+    prior_migration_label = None
+    if prior_bundle is not None and prior_bundle.levels is not None:
+        prior_migration_label = relations.classify_migration(
+            bundle.levels, prior_bundle.levels, atr).label
+    trend_aligned = _trend_alignment(shape.label, prior_migration_label)
+    # shape.close_location is the SAME field day_bias() now gates P/b on - using
+    # it here rather than recomputing from bundle.profile means this sweep and
+    # production can never silently drift apart.
+    close_location = shape.close_location
+    close_location_valid = _close_location_valid(shape.label, close_location)
 
     # THE FOLLOWING SESSION'S OWN TRADING - this is what makes the row a forward
     # test rather than a restatement of today. set_as_of is moved to its close so
@@ -902,6 +976,11 @@ def shape_bias_row(scanner, cache, symbol, qv_rank, session_id):
         "valley_fraction": round(shape.valley_fraction, 4),
         "excess_high": int(shape.excess_high), "excess_low": int(shape.excess_low),
         "poor_high": int(shape.poor_high), "poor_low": int(shape.poor_low),
+        "prior_migration_label": prior_migration_label,
+        "trend_aligned": trend_aligned,
+        "close_location": (round(close_location, 4)
+                           if close_location is not None else None),
+        "close_location_valid": close_location_valid,
         "next_session_id": sessions.session_id(next_start),
         "next_return_atr": (round(next_return_atr, 5)
                             if next_return_atr is not None else None),
@@ -1042,6 +1121,70 @@ def _stratify_by_extreme(rows, key, excess_key, poor_key, label):
              f"{point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
 
 
+def _stratify_by_flag(rows, key, flag_key, group_labels, label):
+    """Agreement rate for one outcome column, split by a single binary modifier -
+    same instrument as _stratify_by_extreme, for a two-way rather than three-way
+    split. `group_labels` is (name for flag==0, name for flag==1)."""
+    groups = {
+        group_labels[0]: [r for r in rows if r.get(flag_key) == 0],
+        group_labels[1]: [r for r in rows if r.get(flag_key) == 1],
+    }
+    for name, group in groups.items():
+        if len(group) < 15:
+            print(f"    {label} | {name:<10} n={len(group):>4d}  (too few)")
+            continue
+        point, lo, hi = metrics.wilson_interval(
+            sum(row[key] for row in group), len(group))
+        print(f"    {label} | {name:<10} n={len(group):>4d}  "
+             f"{point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
+
+
+def _joint_stratification(rows, key, close_key, trend_key, label):
+    """2x2: does close-location validity add information ON TOP OF trend context,
+    or does one subsume the other? Each of the 4 cells pairs one close-location
+    state with one trend-context state."""
+    cells = [
+        ("INVALID", 0, "COUNTER", 0), ("INVALID", 0, "ALIGNED", 1),
+        ("VALID", 1, "COUNTER", 0), ("VALID", 1, "ALIGNED", 1),
+    ]
+    for close_name, close_val, trend_name, trend_val in cells:
+        group = [r for r in rows
+                 if r.get(close_key) == close_val and r.get(trend_key) == trend_val]
+        if len(group) < 15:
+            print(f"    {label} | close={close_name:<8} trend={trend_name:<8} "
+                 f"n={len(group):>4d}  (too few)")
+            continue
+        point, lo, hi = metrics.wilson_interval(
+            sum(row[key] for row in group), len(group))
+        print(f"    {label} | close={close_name:<8} trend={trend_name:<8} "
+             f"n={len(group):>4d}  {point*100:>5.1f}% [{lo*100:>4.1f},{hi*100:>4.1f}]")
+
+
+def _confound_check(rows, flag_key, measure_keys, label):
+    """Does close_location_valid just restate a measurement already in the row -
+    i.e. are VALID sessions simply the more elongated/migrated/extreme-POC ones
+    that would have scored well as B/trend anyway - rather than adding anything
+    new? Rank-separation (AUC) between the VALID and INVALID groups on each
+    candidate, the same instrument report_acceptance's ATTRIBUTION TEST already
+    uses for the same question about a different pair of measures. 0.500 = the
+    two groups look the same on this axis, i.e. NOT a confound on this measure."""
+    print(f"\n  CONFOUND CHECK ({label}): is close_location_valid just restating")
+    print(f"  poc_position / va_range_ratio / migration, rather than new information?")
+    for measure_key in measure_keys:
+        def value_of(row):
+            raw = row[measure_key]
+            return abs(raw) if measure_key == "intra_poc_migration_atr" else raw
+        valid_vals = [value_of(r) for r in rows
+                     if r.get(flag_key) == 1 and r.get(measure_key) is not None]
+        invalid_vals = [value_of(r) for r in rows
+                        if r.get(flag_key) == 0 and r.get(measure_key) is not None]
+        result = metrics.auc(valid_vals, invalid_vals)
+        if result:
+            print(f"    {measure_key:<26} AUC={result['auc']:.4f} "
+                 f"[{result['low']:.4f},{result['high']:.4f}]  "
+                 f"n={result['n_pos']}+{result['n_neg']}   {metrics.auc_verdict(result)}")
+
+
 def _outcomes_agree_with_each_other(rows, pairs):
     print(f"\nDO THE THREE OUTCOME DEFINITIONS AGREE WITH EACH OTHER?")
     print(f"  (independent of day_bias - just whether they tell the same story)")
@@ -1112,6 +1255,39 @@ def report_shape_bias(rows):
         b_rows = [row for row in primary if row["shape"] == "b"]
         _stratify_by_extreme(b_rows, "agrees_with_bias", "excess_low", "poor_low",
                              "b (low)")
+
+        print(f"\nTREND-CONTEXT STRATIFICATION (primary outcome) - professional")
+        print(f"  practice reads P/b as short-covering/long-liquidation (weaker,")
+        print(f"  COUNTER-trend) vs genuine continuation (ALIGNED) - see STAGE 3")
+        print(f"  note above shape_bias_row. day_bias() currently makes no such")
+        print(f"  distinction - does the data say it should?")
+        _stratify_by_flag(p_rows, "agrees_with_bias", "trend_aligned",
+                          ("COUNTER", "ALIGNED"), "P")
+        _stratify_by_flag(b_rows, "agrees_with_bias", "trend_aligned",
+                          ("COUNTER", "ALIGNED"), "b")
+
+        print(f"\nCLOSE-LOCATION VALIDITY STRATIFICATION (primary outcome) - the")
+        print(f"  literature treats the read as unconfirmed unless price closed on")
+        print(f"  the appropriate side of its OWN day's range - an unconditional")
+        print(f"  P/b vote skips this filter entirely.")
+        _stratify_by_flag(p_rows, "agrees_with_bias", "close_location_valid",
+                          ("INVALID", "VALID"), "P")
+        _stratify_by_flag(b_rows, "agrees_with_bias", "close_location_valid",
+                          ("INVALID", "VALID"), "b")
+
+        print(f"\nJOINT STRATIFICATION (primary outcome) - does close-location add")
+        print(f"  anything ON TOP OF trend context, or does one subsume the other?")
+        _joint_stratification(p_rows, "agrees_with_bias", "close_location_valid",
+                              "trend_aligned", "P")
+        _joint_stratification(b_rows, "agrees_with_bias", "close_location_valid",
+                              "trend_aligned", "b")
+
+        _confound_check(p_rows, "close_location_valid",
+                        ("poc_position", "va_range_ratio", "intra_poc_migration_atr"),
+                        "P")
+        _confound_check(b_rows, "close_location_valid",
+                        ("poc_position", "va_range_ratio", "intra_poc_migration_atr"),
+                        "b")
 
     print(f"\nRANK SEPARATION (full range, not just rows already labelled P/b/trend;")
     print(f"  0.500 = the axis carries no directional information at all)")

@@ -176,5 +176,55 @@ class BimodalFractionTests(unittest.TestCase):
         self.assertEqual(shape.valley_fraction, 0.0)
 
 
+class CloseLocationTests(unittest.TestCase):
+    """close_location is day_bias()'s close-location confirmation for P/b - see
+    its docstring for the validated numbers this is calibrated from. Covered at
+    classify() level (not just the day_bias mock in test_day_bias.py) so a
+    change to the actual (close - low) / range computation is caught here."""
+
+    def _profile_with_close(self, close, bin_size=1.0):
+        # Ten contiguous bins, same low-volume-everywhere shape as elsewhere in
+        # this file - close_location depends only on high/low/close, not on the
+        # volume histogram, so a flat profile isolates it cleanly.
+        profile = builder.Profile(
+            symbol="TESTUSDT", window_start=0, window_end=86_400_000,
+            as_of=86_400_000, bin_size=bin_size,
+            volume={i: 10.0 for i in range(10)},
+        )
+        profile.high = profile.bin_high(9)
+        profile.low = profile.bin_low(0)
+        profile.open = profile.bin_center(4)
+        profile.close = close
+        profile.candle_count = 100
+        profile.total_volume = sum(profile.volume.values())
+        profile.total_quote_volume = profile.total_volume
+        return profile
+
+    def test_close_at_the_high_is_one(self):
+        profile = self._profile_with_close(close=10.0)  # range is [0, 10)
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+        self.assertAlmostEqual(shape.close_location, 1.0, places=6)
+
+    def test_close_at_the_low_is_zero(self):
+        profile = self._profile_with_close(close=0.0)
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+        self.assertAlmostEqual(shape.close_location, 0.0, places=6)
+
+    def test_close_three_quarters_up_the_range(self):
+        profile = self._profile_with_close(close=7.5)  # range is [0, 10)
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+        self.assertAlmostEqual(shape.close_location, 0.75, places=6)
+
+    def test_zero_range_is_none_not_a_divide_by_zero(self):
+        profile = self._profile_with_close(close=5.0)
+        profile.high = profile.low  # degenerate: a session with no range at all
+        levels = levels_mod.compute(profile)
+        shape = shape_mod.classify(profile, levels)
+        self.assertIsNone(shape.close_location)
+
+
 if __name__ == "__main__":
     unittest.main()

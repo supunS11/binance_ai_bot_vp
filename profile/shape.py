@@ -79,6 +79,12 @@ class Shape:
 
     single_print_bins: list = field(default_factory=list)
 
+    # Where this session's own close sits in its own range, 0.0=low 1.0=high.
+    # None (not 0.0) when there was no range to measure against - see
+    # intra_poc_migration_atr's own comment for why the sentinel matters here too.
+    # This is day_bias()'s close-location condition for P/b - see its docstring.
+    close_location: float = None
+
     @property
     def balanced(self):
         """Is this a two-sided auction? Gates every mean-reversion setup."""
@@ -110,6 +116,9 @@ class Shape:
             "poor_high": self.poor_high,
             "poor_low": self.poor_low,
             "single_prints": len(self.single_print_bins),
+            "close_location": (
+                round(self.close_location, 4)
+                if self.close_location is not None else None),
         }
 
 
@@ -285,6 +294,9 @@ def classify(profile, levels, intra_poc_migration_atr=None):
     poc_position = (
         (levels.poc_price - profile.low) / total_range if total_range > 0 else 0.5
     )
+    close_location = (
+        (profile.close - profile.low) / total_range if total_range > 0 else None
+    )
 
     bimodal, second_mode, valley, second_mode_fraction, valley_fraction = (
         _bimodality(profile, levels))
@@ -342,23 +354,55 @@ def classify(profile, levels, intra_poc_migration_atr=None):
         poor_high=poor_high,
         poor_low=poor_low,
         single_print_bins=_single_prints(profile, levels),
+        close_location=close_location,
     )
 
 
-def day_bias(shape):
-    """Directional bias from the previous day's profile shape.
+def day_bias(shape, require_close_location=True):
+    """Directional bias from a profile's shape.
 
-    P gives BULL and b gives BEAR; D gives NEUTRAL. Trend (thin or elongated) and double
-    distribution days take their direction from the intra-session POC migration, the one
-    measure here of where value travelled. When that is unmeasured or zero they are NEUTRAL,
-    never guessed. None means there is no shape to read.
+    P gives BULL and b gives BEAR - but ONLY when `require_close_location` (the
+    default) and the session's own close actually confirmed the move: P needs a
+    close in the upper half of its own range, b needs one in the lower half.
+    Market-Profile practice treats an unconfirmed P/b as "short covering" /
+    "long liquidation" that never held what it took, not as the same signal
+    with lower confidence - and that distinction is not cosmetic here. Measured
+    2026-10-09 against 14,065 symbol-sessions: an unconfirmed P/b agrees with
+    the next session's own value migration only 8.6%/10.7% of the time - far
+    WORSE than a coin flip, not merely uninformative - while a confirmed one
+    agrees 52.8%/54.2% of the time. Confound-checked against poc_position,
+    va_range_ratio and |intra_poc_migration_atr|: none explain the gap, so this
+    is not just a restatement of a measurement already folded into `trend`/`B`.
+    See research/calibrate.py's STAGE 3 note and `report_shape_bias` for the
+    full numbers this is calibrated from.
+
+    An unconfirmed P/b returns NEUTRAL, never the opposite side. The data above
+    shows the unconfirmed case is strongly wrong on average, which is tempting
+    to read as "trade the inverse" - but that is a separate claim this change
+    deliberately does not make without its own direct validation against real
+    S4-OFR trades, not just next-session price action.
+
+    Pass `require_close_location=False` only for a shape read off a still-
+    DEVELOPING session (see profile/bias.py's `_dev_vote`) - the validation
+    above is against a COMPLETED session's own final close, and has not been
+    separately tested against an in-progress session's latest price, which is
+    a structurally different and untested read.
+
+    D gives NEUTRAL. Trend (thin or elongated) and double distribution days
+    take their direction from the intra-session POC migration, the one measure
+    here of where value travelled. When that is unmeasured or zero they are
+    NEUTRAL, never guessed. None means there is no shape to read.
     """
     if shape is None:
         return None
     if shape.label == "P":
-        return "BULL"
+        confirmed = (require_close_location is False or
+                     (shape.close_location is not None and shape.close_location > 0.5))
+        return "BULL" if confirmed else "NEUTRAL"
     if shape.label == "b":
-        return "BEAR"
+        confirmed = (require_close_location is False or
+                     (shape.close_location is not None and shape.close_location < 0.5))
+        return "BEAR" if confirmed else "NEUTRAL"
     if shape.label == "D":
         return "NEUTRAL"
     migration = shape.intra_poc_migration_atr

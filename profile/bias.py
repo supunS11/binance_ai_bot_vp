@@ -26,7 +26,10 @@ def _open_vote(open_relationship):
 def _dev_vote(dev_shape, maturity):
     if dev_shape is None or not maturity or not maturity.get("mature"):
         return None
-    return shape_mod.day_bias(dev_shape)
+    # require_close_location=False: today's own session has not closed yet, so
+    # there is no settled close to confirm against - the close-location
+    # validation in day_bias() was measured against COMPLETED sessions only.
+    return shape_mod.day_bias(dev_shape, require_close_location=False)
 
 
 def session_bias(ctx):

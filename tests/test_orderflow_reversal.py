@@ -129,8 +129,15 @@ def _levels(poc, vah, val, hvns=()):
     return SimpleNamespace(poc_price=poc, vah=vah, val=val, hvns=list(hvns))
 
 
-def _shape(label, migration=None):
-    return SimpleNamespace(label=label, intra_poc_migration_atr=migration)
+def _shape(label, migration=None, close_location=None):
+    # Default close_location CONFIRMS P/b (see day_bias) so existing fixtures
+    # calling _shape("P")/_shape("b") keep getting the unconditional vote they
+    # were written to expect; pass close_location explicitly to test the
+    # unconfirmed case.
+    if close_location is None:
+        close_location = {"P": 0.8, "b": 0.2}.get(label)
+    return SimpleNamespace(label=label, intra_poc_migration_atr=migration,
+                           close_location=close_location)
 
 
 class DayBiasTests(unittest.TestCase):
