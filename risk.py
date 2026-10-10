@@ -29,6 +29,7 @@ import logging
 from dataclasses import dataclass, field
 
 import config
+import sessions
 from exchange import filters
 from setups.base import RejectReason, reject
 
@@ -47,6 +48,9 @@ class PortfolioState:
     open_positions: dict = field(default_factory=dict)   # symbol -> signed qty
     realised_r_today: float = 0.0
     consecutive_losses: int = 0
+    # Timestamp (ms) of the most recent loss in that streak, or None - risk.py's own
+    # automatic release for CONSECUTIVE_LOSS_LIMIT measures from this, not from a win.
+    last_loss_closed_at: int = None
     # True when `equity` is PAPER_EQUITY rather than a real balance. Recorded so a
     # journal row can never be mistaken for one sized against real capital.
     notional_equity: bool = False
@@ -64,7 +68,7 @@ class PortfolioState:
         return abs(self.open_positions.get(symbol.upper(), 0.0)) > 0
 
     def as_row(self):
-        return {
+        row = {
             "equity": self.equity,
             "positions": self.position_count,
             "longs": self.direction_count("BUY"),
@@ -72,6 +76,15 @@ class PortfolioState:
             "realised_r_today": round(self.realised_r_today, 4),
             "consecutive_losses": self.consecutive_losses,
         }
+        # Visible cooldown countdown once the streak is actually over the limit -
+        # this is the number that would have answered 2026-10-10's "why has nothing
+        # traded" question directly, instead of a log dive.
+        if self.consecutive_losses >= config.CONSECUTIVE_LOSS_LIMIT:
+            cooldown_ms = config.CONSECUTIVE_LOSS_COOLDOWN_HOURS * 3_600_000
+            since_last_loss = sessions.now_ms() - (self.last_loss_closed_at or 0)
+            row["consecutive_loss_cooldown_remaining_hours"] = round(
+                max(0.0, (cooldown_ms - since_last_loss) / 3_600_000), 2)
+        return row
 
 
 def check_limits(candidate, state, paper=False):
@@ -120,10 +133,21 @@ def check_limits(candidate, state, paper=False):
                               f"-{config.DAILY_LOSS_LIMIT_R}R"))
 
     if state.consecutive_losses >= config.CONSECUTIVE_LOSS_LIMIT:
-        return reject(RejectReason.RISK_LIMIT_CONSECUTIVE, candidate.setup,
-                      candidate.symbol, direction=candidate.direction,
-                      detail=(f"{state.consecutive_losses} consecutive losses >= "
-                              f"{config.CONSECUTIVE_LOSS_LIMIT}"))
+        cooldown_ms = config.CONSECUTIVE_LOSS_COOLDOWN_HOURS * 3_600_000
+        since_last_loss = sessions.now_ms() - (state.last_loss_closed_at or 0)
+        if since_last_loss < cooldown_ms:
+            remaining_hours = (cooldown_ms - since_last_loss) / 3_600_000
+            return reject(RejectReason.RISK_LIMIT_CONSECUTIVE, candidate.setup,
+                          candidate.symbol, direction=candidate.direction,
+                          detail=(f"{state.consecutive_losses} consecutive losses >= "
+                                  f"{config.CONSECUTIVE_LOSS_LIMIT}, releases in "
+                                  f"{remaining_hours:.1f}h"))
+        # AUTOMATIC RELEASE. The streak's raw count is still over the limit, but the
+        # most recent loss is old enough that this is no longer "the bot refusing to
+        # try again after a bad run" - see CONSECUTIVE_LOSS_COOLDOWN_HOURS's own
+        # comment in config.py for why this exists at all. One candidate gets through;
+        # if it also loses, the next check measures from ITS closed_at, so a genuinely
+        # bad run still only gets one attempt per cooldown window, not an open door.
 
     return None
 
@@ -289,5 +313,6 @@ def portfolio_from_exchange(rest, journal_stats=None):
     if journal_stats:
         state.realised_r_today = float(journal_stats.get("realised_r_today", 0.0))
         state.consecutive_losses = int(journal_stats.get("consecutive_losses", 0))
+        state.last_loss_closed_at = journal_stats.get("last_loss_closed_at")
 
     return state

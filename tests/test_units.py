@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import acceptance                                         # noqa: E402
 import config                                             # noqa: E402
 import risk                                               # noqa: E402
+import sessions                                           # noqa: E402
 from exchange import filters                              # noqa: E402
 from profile import builder as profile_builder            # noqa: E402
 from setups import base                                   # noqa: E402
@@ -358,6 +359,54 @@ class RiskSizingTests(unittest.TestCase):
             config.TRADING_ENABLED = original
         self.assertIsNotNone(rejection)
         self.assertEqual(rejection.reason, RejectReason.RISK_LIMIT_DIRECTION)
+
+    def test_consecutive_loss_limit_blocks_within_the_cooldown(self):
+        state = risk.PortfolioState(equity=10_000.0, available_balance=10_000.0,
+                                    consecutive_losses=config.CONSECUTIVE_LOSS_LIMIT,
+                                    last_loss_closed_at=sessions.now_ms())
+        candidate = self._candidate(100.0, 99.0, 102.0)
+        original = config.TRADING_ENABLED
+        config.TRADING_ENABLED = True
+        try:
+            rejection = risk.check_limits(candidate, state)
+        finally:
+            config.TRADING_ENABLED = original
+        self.assertIsNotNone(rejection)
+        self.assertEqual(rejection.reason, RejectReason.RISK_LIMIT_CONSECUTIVE)
+
+    def test_consecutive_loss_limit_releases_once_the_cooldown_has_passed(self):
+        """2026-10-10: without this, a losing streak with no open position left to
+        produce the win that clears it refused every new entry forever - recoverable
+        only by a human. The raw count is still over the limit here; only the AGE of
+        the most recent loss has changed."""
+        cooldown_ms = config.CONSECUTIVE_LOSS_COOLDOWN_HOURS * 3_600_000
+        state = risk.PortfolioState(
+            equity=10_000.0, available_balance=10_000.0,
+            consecutive_losses=config.CONSECUTIVE_LOSS_LIMIT,
+            last_loss_closed_at=sessions.now_ms() - int(cooldown_ms) - 1_000)
+        candidate = self._candidate(100.0, 99.0, 102.0)
+        original = config.TRADING_ENABLED
+        config.TRADING_ENABLED = True
+        try:
+            rejection = risk.check_limits(candidate, state)
+        finally:
+            config.TRADING_ENABLED = original
+        self.assertIsNone(rejection)
+
+    def test_consecutive_loss_limit_ignores_cooldown_when_under_the_limit(self):
+        """A streak that never reached the limit is not gated on age at all."""
+        state = risk.PortfolioState(
+            equity=10_000.0, available_balance=10_000.0,
+            consecutive_losses=config.CONSECUTIVE_LOSS_LIMIT - 1,
+            last_loss_closed_at=sessions.now_ms())
+        candidate = self._candidate(100.0, 99.0, 102.0)
+        original = config.TRADING_ENABLED
+        config.TRADING_ENABLED = True
+        try:
+            rejection = risk.check_limits(candidate, state)
+        finally:
+            config.TRADING_ENABLED = original
+        self.assertIsNone(rejection)
 
     def test_paper_mode_skips_only_the_trading_flag(self):
         """Observation mode must still be sized, or its journal is worthless.

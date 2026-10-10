@@ -412,7 +412,7 @@ class Journal:
             # early or never. `id` is AUTOINCREMENT, so it breaks the tie by true
             # insertion order.
             recent = self._conn.execute(
-                """SELECT net_r FROM trade_journal
+                """SELECT net_r, closed_at FROM trade_journal
                    WHERE closed_at IS NOT NULL
                    ORDER BY closed_at DESC, id DESC LIMIT 20"""
             ).fetchall()
@@ -427,17 +427,24 @@ class Journal:
         # streak nor denies it. Counting it as a loss would be the other error,
         # halting trading on missing data rather than on evidence.
         streak = 0
+        last_loss_closed_at = None
         for row in recent:
             value = row["net_r"]
             if value is None:
                 continue
             if value < 0:
                 streak += 1
+                # The newest loss still standing in the streak so far - once the loop
+                # moves past it to an OLDER row, this stays put, so it ends up the
+                # most recent one. risk.py's cooldown measures from this timestamp.
+                if last_loss_closed_at is None:
+                    last_loss_closed_at = row["closed_at"]
             else:
                 break
 
         return {"realised_r_today": float(realised or 0.0),
-                "consecutive_losses": streak}
+                "consecutive_losses": streak,
+                "last_loss_closed_at": last_loss_closed_at}
 
     def reject_tally(self, session_id=None, limit=40):
         """Reject counts by reason, for the heartbeat.

@@ -1138,6 +1138,14 @@ MAX_POSITIONS_PER_SYMBOL = 1                       # structural, not tunable
 
 DAILY_LOSS_LIMIT_R = env_float("DAILY_LOSS_LIMIT_R", 3.0)
 CONSECUTIVE_LOSS_LIMIT = env_int("CONSECUTIVE_LOSS_LIMIT", 4)
+# Found 2026-10-10: the streak above has no time bound, unlike DAILY_LOSS_LIMIT_R's own
+# session scoping - once tripped with no open position left to produce the win that clears
+# it, the bot refused every new entry forever, recoverable only by a human. This is the
+# automatic release: once this many hours have passed since the MOST RECENT loss in the
+# streak, a new candidate is let through again regardless of the raw count. If that trade
+# also loses, the clock restarts from its own closed_at - so a persistent bad run still
+# only gets one attempt per cooldown window, not a free-for-all.
+CONSECUTIVE_LOSS_COOLDOWN_HOURS = env_float("CONSECUTIVE_LOSS_COOLDOWN_HOURS", 6.0)
 
 # Stop geometry bounds. Below the tight bound R is meaningless because the cost
 # of trading exceeds the risk unit; above the wide bound position size collapses.

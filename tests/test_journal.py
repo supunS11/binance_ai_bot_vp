@@ -90,14 +90,15 @@ class JournalRoundTripTests(unittest.TestCase):
             except OSError:
                 pass
 
-    def _open_and_close(self, net_r, symbol="TESTUSDT", reason="STOP"):
+    def _open_and_close(self, net_r, symbol="TESTUSDT", reason="STOP", closed_at=None):
         managed = _managed(symbol=symbol)
+        closed_at = closed_at if closed_at is not None else sessions.now_ms()
         self.journal.record_trade_open(managed, _Candidate(managed))
         self.journal.record_trade_close(managed, {
             "exit_price": 99.0, "exit_reason": reason,
             "gross_r": net_r, "net_r": net_r, "commission": 0.02,
             "pnl": None if net_r is None else net_r * 25.0,
-            "closed_at": sessions.now_ms(),
+            "closed_at": closed_at,
             "bars_held": 1.0,
         })
         return managed
@@ -123,6 +124,21 @@ class JournalRoundTripTests(unittest.TestCase):
         for value in (1.5, -1.0, -1.0, -1.0):
             self._open_and_close(value)
         self.assertEqual(self.journal.stats_today()["consecutive_losses"], 3)
+
+    def test_last_loss_closed_at_is_the_most_recent_losing_trades_timestamp(self):
+        """risk.py's automatic cooldown release (2026-10-10) measures from this -
+        it must be the NEWEST loss in the streak, not the oldest or an average."""
+        self._open_and_close(-1.0, closed_at=1_000)
+        self._open_and_close(-1.0, closed_at=2_000)
+        self._open_and_close(-1.0, closed_at=3_000)
+        self.assertEqual(self.journal.stats_today()["last_loss_closed_at"], 3_000)
+
+    def test_last_loss_closed_at_is_none_without_a_live_streak(self):
+        self._open_and_close(-1.0, closed_at=1_000)
+        self._open_and_close(1.5, closed_at=2_000)
+        stats = self.journal.stats_today()
+        self.assertEqual(stats["consecutive_losses"], 0)
+        self.assertIsNone(stats["last_loss_closed_at"])
 
     def test_an_unknown_exit_does_not_reset_the_loss_streak(self):
         """The risk-control flaw: NULL net_r read as a non-loss.
