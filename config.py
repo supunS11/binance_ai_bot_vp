@@ -1228,6 +1228,32 @@ FEED_DEPTH_SAMPLE_SECONDS = env_float("FEED_DEPTH_SAMPLE_SECONDS", 5.0)
 FEED_SYMBOLS_PER_SOCKET = env_int("FEED_SYMBOLS_PER_SOCKET", 100)
 
 
+# ------------------------------------------------------------------- S6-WF workflow
+# The context-aware VP + order-flow workflow (setups/workflow.py; design:
+# calibration/workflow_v2/design_plan_DRAFT.md). OFF by default. When on, it runs every
+# cycle for every scanned symbol, next to S4-OFR, and its candidates go through the same
+# gates, sizing and TRADING_ENABLED / observation mode as every other setup. Its order
+# flow reads the feed recorder's trade files (FEED_OUT_DIR), so ops.feed_recorder must run
+# for the same symbols; without them every read ends NO_DATA (journaled), never a trade.
+# Not validated: the pre-registered holdout test has not been run.
+WF_ENABLED = env_bool("WF_ENABLED", "False")
+# Its OWN order switch. False: S6-WF candidates are gated, sized and journaled as WOULD TRADE
+# but never sent - even while TRADING_ENABLED=true lets other setups trade. Both must be true
+# for an S6-WF order to reach the venue.
+WF_TRADING_ENABLED = env_bool("WF_TRADING_ENABLED", "False")
+# Playbook 5A middle-timeframe alignment (calibration/workflow_v2/mtf_profiles_recommendation.md
+# 3.2). The 1D trend is compared with the last 3 sessions' value migration:
+#   ALIGNED  -> trend paths T1 / T2 / T3 as normal;
+#   RANGE    -> no trend paths; only the with-trend composite lower edge (path FC) trades;
+#   CONFLICT -> no trend trades that day.
+# BALANCE days are unaffected. OFF by default because no filter of this kind has shown a
+# per-trade edge in our measurements; the pre-registered holdout tests it (H-MTF). The label
+# is computed and journaled either way.
+WF_MTF_ALIGNMENT = env_bool("WF_MTF_ALIGNMENT", "False")
+# Disk cache for the workflow's daily value areas (one small JSON per symbol).
+WF_CACHE_DIR = env_str("WF_CACHE_DIR", "wf_cache")
+
+
 # ------------------------------------------------------------------- runtime
 
 SCAN_INTERVAL_SECONDS = env_int("SCAN_INTERVAL_SECONDS", 60)

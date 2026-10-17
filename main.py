@@ -61,10 +61,18 @@ def _seconds_until_next_cycle(started, now=None):
     """Next cycle start. With the zone watch on, cycles align to 1-minute candle closes,
     so a closed candle is processed seconds after it closes, not up to a scan interval later."""
     now = time.time() if now is None else now
-    if not config.ZONE_WATCH_ENABLED:
+    if not (config.ZONE_WATCH_ENABLED or config.WF_ENABLED):
         return max(1.0, config.SCAN_INTERVAL_SECONDS - (now - started))
     due = (now // 60 + 1) * 60 + config.ZONE_WATCH_CLOSE_DELAY_SECONDS
     return max(1.0, due - now)
+
+
+def observation_only(candidate, safe_to_trade):
+    """True when the candidate must be journaled, not sent: trading off, state not yet
+    reconciled, or an S6-WF candidate without its own WF_TRADING_ENABLED switch."""
+    if not (config.TRADING_ENABLED and safe_to_trade):
+        return True
+    return candidate.setup == "S6-WF" and not config.WF_TRADING_ENABLED
 
 
 class VolumeProfileBot:
@@ -83,6 +91,12 @@ class VolumeProfileBot:
         self.state_store = runtime.StateStore()
         self.zone_watch = zone_watch_mod.ZoneWatch(self.state_store)
         self.kill_switch = runtime.KillSwitch()
+        # S6-WF, imported only when enabled (it needs numpy and the recorder's files).
+        self.workflow = None
+        if config.WF_ENABLED:
+            from setups import workflow as workflow_mod
+            self.workflow = workflow_mod.Workflow(
+                workflow_mod.LiveData(self.rest, self.cache), self.state_store)
 
         self._session_id = sessions.session_id(sessions.now_ms())
         self._cycle = 0
@@ -110,6 +124,9 @@ class VolumeProfileBot:
         self.rest.sync_time()
         self.catalog.refresh(force=True)
         self.zone_watch.restore()
+        if self.workflow is not None:
+            self.workflow.restore()
+            log.info("S6-WF workflow ON (order flow from %s)", config.FEED_OUT_DIR)
 
         # Recovery gates trading, not scanning: an unexplained position means stop
         # placing orders, but keeping the profile pipeline running is harmless and
@@ -221,6 +238,9 @@ class VolumeProfileBot:
             else:
                 candidate, rejections = self.state_machine.evaluate(ctx)
 
+            if self.workflow is not None:
+                candidate, rejections = self._workflow_step(ctx, candidate, rejections)
+
             if rejections:
                 self.journal.record_rejects(
                     rejections, session_id=ctx.session_id,
@@ -248,6 +268,20 @@ class VolumeProfileBot:
         candidate, rejections = self.zone_watch.observe(ctx)
         return candidate, rejections
 
+    def _workflow_step(self, ctx, candidate, rejections):
+        """S6-WF beside S4-OFR. Runs every cycle so its minute-by-minute reads stay current; an
+        S4 candidate in the same cycle wins (one position per symbol). A failure here is
+        contained to this symbol and this setup."""
+        try:
+            wf_candidate, wf_rejections = self.workflow.observe(ctx)
+        except Exception:                         # noqa: BLE001
+            log.exception("%s S6-WF step failed", ctx.symbol)
+            return candidate, rejections
+        if candidate is not None and wf_candidate is not None:
+            log.info("%s S6-WF candidate not taken: S4-OFR fired this cycle", ctx.symbol)
+            wf_candidate = None
+        return candidate or wf_candidate, list(rejections) + list(wf_rejections)
+
     def try_open(self, candidate, ctx, portfolio):
         """Gate, size, and place one candidate. Journals every refusal."""
         snapshot = ctx.profile_row()
@@ -258,7 +292,7 @@ class VolumeProfileBot:
         # before sizing records only "the flag is off", which cannot be compared with a
         # replay of the same sessions; a run that sizes and journals produces exactly
         # the rows Phase 1 needs to verify that live and replay agree.
-        paper = not (config.TRADING_ENABLED and self._safe_to_trade)
+        paper = observation_only(candidate, self._safe_to_trade)
 
         # Live book: needed for the spread gate and for passive entry pricing.
         book = {}

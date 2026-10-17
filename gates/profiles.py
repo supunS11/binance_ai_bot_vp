@@ -89,6 +89,15 @@ GATE_PROFILES = {
         checks.venue_filters,
     ) + _OPINION,
 
+    # S6-WF plans its own trade (wf_trade.plan: stop side, fees <= 1/3 R, target >= 2R) with
+    # the same rules the study measures, so only the arithmetic and venue checks run here.
+    # No opinion gates: adding any would make live differ from the measured workflow.
+    "S6-WF": (
+        checks.direction_geometry,
+        checks.stop_too_tight,
+        checks.venue_filters,
+    ),
+
     "S3-BRK": (
         checks.profile_thin,
         checks.value_bounds_unstable,

@@ -113,6 +113,16 @@ class StateStore:
     );
     """
 
+    # S6-WF (setups/workflow.py): per symbol, the session and the levels already decided, so
+    # a restart cannot read - or enter - the same level twice. Its own table: the zone-watch
+    # table's payloads are parsed by ZoneWatch.restore, which knows only its own format.
+    _WORKFLOW_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS workflow_state (
+        symbol   TEXT PRIMARY KEY,
+        payload  TEXT NOT NULL
+    );
+    """
+
     def __init__(self, path=None):
         self._path = path or config.DB_PATH
         self._lock = threading.RLock()
@@ -121,7 +131,20 @@ class StateStore:
         with self._lock:
             self._conn.executescript(self._SCHEMA)
             self._conn.executescript(self._WATCH_SCHEMA)
+            self._conn.executescript(self._WORKFLOW_SCHEMA)
             self._conn.commit()
+
+    def save_workflow_state(self, symbol, payload):
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO workflow_state (symbol, payload) VALUES (?,?)",
+                (symbol.upper(), payload))
+            self._conn.commit()
+
+    def load_workflow_state(self):
+        with self._lock:
+            rows = self._conn.execute("SELECT symbol, payload FROM workflow_state").fetchall()
+        return {row["symbol"]: row["payload"] for row in rows}
 
     def save_zone_watch(self, symbol, payload):
         """Replace one symbol's zone-watch state. A None payload clears it."""
