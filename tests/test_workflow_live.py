@@ -297,6 +297,17 @@ class S6OnlyTest(unittest.TestCase):
         with patch.object(config, "S4_OFR_ENABLED", False):
             self.assertTrue(orderflow_reversal.detect(ctx).is_rejection)
 
+    def test_state_machine_skipped_when_nothing_enabled(self):
+        import main
+        with patch.object(config, "ACTIVE_SETUPS", ["S4-OFR"]):
+            with patch.object(config, "S4_OFR_ENABLED", False):
+                self.assertFalse(main.state_machine_has_work())
+            with patch.object(config, "S4_OFR_ENABLED", True):
+                self.assertTrue(main.state_machine_has_work())
+        with patch.object(config, "ACTIVE_SETUPS", ["S4-OFR", "S2-VAR"]), \
+                patch.object(config, "S4_OFR_ENABLED", False):
+            self.assertTrue(main.state_machine_has_work())
+
     def test_workflow_candidate_passes_when_s4_silent(self):
         import main
         wf = SimpleNamespace(setup="S6-WF")

@@ -67,6 +67,15 @@ def _seconds_until_next_cycle(started, now=None):
     return max(1.0, due - now)
 
 
+def state_machine_has_work():
+    """False when every setup the state machine may run is switched off (S6-WF-only
+    deployment: ACTIVE_SETUPS is S4-OFR and S4_OFR_ENABLED is false). evaluate() would then
+    journal one SETUP_DISABLED / OPEN_RELATIONSHIP_WRONG row per setup, symbol and cycle -
+    about 38,000 rows an hour - and can never return a candidate."""
+    active = set(config.ACTIVE_SETUPS)
+    return bool(active - {"S4-OFR"}) or ("S4-OFR" in active and config.S4_OFR_ENABLED)
+
+
 def observation_only(candidate, safe_to_trade):
     """True when the candidate must be journaled, not sent: trading off, state not yet
     reconciled, or an S6-WF candidate without its own WF_TRADING_ENABLED switch."""
@@ -235,8 +244,10 @@ class VolumeProfileBot:
 
             if config.ZONE_WATCH_ENABLED:
                 candidate, rejections = self._watch_step(ctx)
-            else:
+            elif state_machine_has_work():
                 candidate, rejections = self.state_machine.evaluate(ctx)
+            else:
+                candidate, rejections = None, []
 
             if self.workflow is not None:
                 candidate, rejections = self._workflow_step(ctx, candidate, rejections)
