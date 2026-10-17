@@ -288,5 +288,24 @@ class CycleAlignmentTest(unittest.TestCase):
                                    180 + config.ZONE_WATCH_CLOSE_DELAY_SECONDS - 125.0)
 
 
+class S6OnlyTest(unittest.TestCase):
+    """Deployment with S4-OFR stopped: ZONE_WATCH_ENABLED=false and S4_OFR_ENABLED=false."""
+
+    def test_s4_off_yields_no_s4_candidate(self):
+        from setups import orderflow_reversal
+        ctx = SimpleNamespace(symbol="BTCUSDT")
+        with patch.object(config, "S4_OFR_ENABLED", False):
+            self.assertTrue(orderflow_reversal.detect(ctx).is_rejection)
+
+    def test_workflow_candidate_passes_when_s4_silent(self):
+        import main
+        wf = SimpleNamespace(setup="S6-WF")
+        bot = SimpleNamespace(workflow=SimpleNamespace(observe=lambda ctx: (wf, [])))
+        candidate, rejections = main.VolumeProfileBot._workflow_step(
+            bot, SimpleNamespace(symbol="BTCUSDT"), None, ["s4 refusal"])
+        self.assertIs(candidate, wf)
+        self.assertEqual(rejections, ["s4 refusal"])
+
+
 if __name__ == "__main__":
     unittest.main()
