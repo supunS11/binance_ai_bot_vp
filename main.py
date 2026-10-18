@@ -201,7 +201,15 @@ class VolumeProfileBot:
             log.warning("KILL SWITCH engaged (%s) - managing positions only",
                         self.kill_switch.reason())
         else:
+            pass_started = time.time()
             scanned, contexts, candidates_found = self.scan_for_entries()
+            # Pass time decides how many symbols fit: S6-WF acts on a confirmation only in the
+            # minute after it (setups/workflow.py FRESH_MIN), so a pass must stay under ~60 s.
+            pass_s = time.time() - pass_started
+            if pass_s > 45:
+                log.warning("slow scan pass: %.1fs for %d symbols", pass_s, scanned)
+            elif self._cycle % max(1, config.HEARTBEAT_EVERY_CYCLES) == 0:
+                log.info("scan pass %.1fs for %d symbols", pass_s, scanned)
 
         if self._cycle % max(1, config.HEARTBEAT_EVERY_CYCLES) == 0:
             portfolio = risk.portfolio_from_exchange(

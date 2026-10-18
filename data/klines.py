@@ -129,8 +129,11 @@ def fetch(rest, symbol, interval, start_ms, end_ms, drop_unclosed=True):
                         symbol, interval, cursor)
             break
 
+        # Ask for no more candles than the range can hold: weight is 1 up to 100 candles and
+        # 10 above 1000, and the live scan's per-minute tail fetch needs only one or two.
+        limit = int(min(1500, max(1, -(-(end_ms - cursor) // step) + 1)))
         rows = rest.klines(symbol, interval, start_ms=cursor,
-                           end_ms=end_ms, limit=1500)
+                           end_ms=end_ms, limit=limit)
         if not rows:
             break
 
@@ -142,7 +145,7 @@ def fetch(rest, symbol, interval, start_ms, end_ms, drop_unclosed=True):
             break
         cursor = advanced
 
-        if len(rows) < 1500:
+        if len(rows) < limit:
             break
 
     # De-duplicate: overlapping page boundaries can repeat a candle.
