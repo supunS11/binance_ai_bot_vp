@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 MINUTE_MS = 60_000
 DAY_MIN = 1440
 VOLUME_TOL = 1e-3            # relative; the recorder rounds to 8 decimals
+SHIFT_TOL = 1e-6             # a boundary shift must offset exactly (research/footprint.py)
 GZIP_MAGIC = b"\x1f\x8b\x08"
 
 
@@ -144,13 +145,20 @@ def day_raw(minutes, row_size, upto=DAY_MIN - 1):
 
 def invalid_minutes(minutes, gaps, candles, day_start, upto):
     """Sorted minute indexes 0..upto of the day that cannot be trusted: no 1m candle, a
-    recorder total that does not match the candle's volume, or inside a gap marker."""
+    recorder total that does not match the candle's volume, or inside a gap marker.
+
+    BOUNDARY SHIFTS, as research/footprint.py's validate accepts them: Binance's kline
+    sometimes counts a trade stamped in the last milliseconds of a minute in the next minute.
+    Two adjacent mismatched minutes whose differences offset exactly (the same quantity too
+    much in one, too little in the other) are a shift, not missing data, and stay valid.
+    Measured on the VPS 2026-10-18: nearly all live mismatches were such pairs."""
     vol = {}
     for c in candles:
         m = (c.open_time - day_start) // MINUTE_MS
         if 0 <= m <= upto:
             vol[m] = float(c.volume)
     bad = set()
+    diff = {}
     for m in range(upto + 1):
         if m not in vol:
             bad.add(m)
@@ -159,6 +167,12 @@ def invalid_minutes(minutes, gaps, candles, day_start, upto):
         want = vol[m]
         if abs(got - want) > VOLUME_TOL * max(want, 1e-12) and not (want == 0 and got == 0):
             bad.add(m)
+            diff[m] = got - want
+    for m in sorted(diff):
+        n = m + 1
+        if m in bad and n in bad and n in diff \
+                and abs(diff[m] + diff[n]) <= SHIFT_TOL * max(1.0, abs(diff[m])):
+            bad -= {m, n}
     for a, z in gaps:
         lo = max(0, (a - day_start) // MINUTE_MS)
         hi = min(upto, (z - day_start) // MINUTE_MS)

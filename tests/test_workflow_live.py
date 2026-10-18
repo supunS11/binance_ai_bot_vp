@@ -117,6 +117,16 @@ class FootprintArraysTest(unittest.TestCase):
                                   DAY0, 4)
         self.assertEqual(bad, [1, 3, 4])
 
+    def test_boundary_shift_stays_valid(self):
+        # One 0.4 trade stamped late in minute 1 but counted by the kline in minute 2: an
+        # exact offset between adjacent minutes is a shift. Minutes 5/6 do not offset.
+        minutes = {1: {"10": [1.4, 0.0]}, 2: {"10": [0.6, 0.0]}, 5: {"10": [1.5, 0.0]},
+                   6: {"10": [0.6, 0.0]}}
+        candles = [candle(m, 10, 10, 10, 10, v) for m, v in
+                   ((1, 1.0), (2, 1.0), (3, 0.0), (4, 0.0), (5, 1.0), (6, 1.0))]
+        self.assertEqual(fpl.invalid_minutes(minutes, [], candles, DAY0, 6),
+                         [0, 5, 6])
+
     def test_ohlc_arrays(self):
         o, h, l, c = fpl.ohlc_arrays([candle(2, 1, 3, 0.5, 2, 1)], DAY0, upto=10)
         self.assertEqual((o[2], h[2], l[2], c[2]), (1, 3, 0.5, 2))
