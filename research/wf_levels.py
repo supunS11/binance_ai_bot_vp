@@ -63,6 +63,23 @@ def acceptance_times(bars30, vah, val):
     return out
 
 
+def reclaim_time(bars30, vah, val, after_ms):
+    """Close time (+1) of the second of the first two consecutive 30m closes back INSIDE
+    [val, vah], both closing after after_ms (an acceptance time), or None. Dalton: acceptance
+    back inside value undoes the breakout, so the old edge is no longer a with-trend level
+    (added 2026-10-18 after the BASEDUSDT T1 loss: the VAL was 'retested' 1% below it, two
+    hours after price had closed back above it for four 30m bars)."""
+    if after_ms is None:
+        return None
+    for k in range(1, len(bars30)):
+        a, b = bars30[k - 1], bars30[k]
+        if a.close_time + 1 <= after_ms:
+            continue
+        if val <= a.close <= vah and val <= b.close <= vah:
+            return b.close_time + 1
+    return None
+
+
 def eighty_rule(candles, bars30, vah, val):
     """(kind, side, signal_ms, session_extreme) for R or R_CTRL, or None."""
     if not candles or not bars30:
@@ -98,11 +115,13 @@ def value_watches(state, veto, levels, atr, candles, bars30):
     out = []
 
     def add(path, side, kind, level, from_ms):
+        # T1 / X: the breakout must still stand at the touch (reclaim_time).
         z = zone(level, atr)
         i = first_touch(candles, z, side, from_ms)
-        if i is not None:
+        until = reclaim_time(bars30, vah, val, from_ms)
+        if i is not None and (until is None or candles[i].open_time < until):
             out.append({"path": path, "side": side, "kind": kind, "level": level, "zone": z, "i": i,
-                        "from_ms": from_ms, "until_ms": None})
+                        "from_ms": from_ms, "until_ms": until})
 
     if state == ws.TREND_UP and not veto and "ABOVE" in acc:
         add("T1", "BUY", "VAH", vah, acc["ABOVE"])
@@ -177,7 +196,11 @@ def breakout_leg_armed(state, levels, atr, b15_hist, candles, bars30, bins_for):
         if t is None or t >= s_end:
             continue
         armed, _ = leg_armed(pseudo, atr, b15_hist, t, s_end, bins_for)
-        out.append((side, [{**w, "armed_ms": max(w["armed_ms"], t)} for w in armed]))
+        # A reclaim of value undoes the breakout: its legs' levels end there too.
+        r = reclaim_time(bars30, levels.vah, levels.val, t)
+        out.append((side, [{**w, "armed_ms": max(w["armed_ms"], t),
+                            "superseded_ms": min((x for x in (w["superseded_ms"], r) if x is not None),
+                                                 default=None)} for w in armed]))
     return out
 
 

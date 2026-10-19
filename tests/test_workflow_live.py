@@ -22,7 +22,8 @@ from research import wf_trade as wt
 
 _patchers = [patch.object(config, "WF_ENABLED", False),
              patch.object(config, "WF_TRADING_ENABLED", False),
-             patch.object(config, "WF_MTF_ALIGNMENT", False)]
+             patch.object(config, "WF_MTF_ALIGNMENT", False),
+             patch.object(config, "WF_STOP_BEYOND_LEVEL", False)]
 
 
 def setUpModule():

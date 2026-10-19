@@ -1250,6 +1250,11 @@ WF_TRADING_ENABLED = env_bool("WF_TRADING_ENABLED", "False")
 # per-trade edge in our measurements; the pre-registered holdout tests it (H-MTF). The label
 # is computed and journaled either way.
 WF_MTF_ALIGNMENT = env_bool("WF_MTF_ALIGNMENT", "False")
+# Stop for level trades (T/X/F/FC) beyond the level itself as well as beyond the interaction
+# extreme (research/wf_trade.level_stop). OFF: the measured design puts it beyond the extreme
+# only. On the DEV trades it moves 175 of 219 VAH/VAL-level stops and takes up to 47 under 2R
+# (research/wf_fix_count.py, 2026-10-18), so it is a different trade - decide on outcomes.
+WF_STOP_BEYOND_LEVEL = env_bool("WF_STOP_BEYOND_LEVEL", "False")
 # Disk cache for the workflow's daily value areas (one small JSON per symbol).
 WF_CACHE_DIR = env_str("WF_CACHE_DIR", "wf_cache")
 

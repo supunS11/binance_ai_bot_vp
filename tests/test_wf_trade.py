@@ -46,6 +46,16 @@ class Targets(unittest.TestCase):
         self.assertEqual(wt.plan("BUY", 100, 99, 101, 102), "")
 
 
+class LevelStop(unittest.TestCase):
+    def test_stop_beyond_level_and_extreme(self):
+        # BASEDUSDT 2026-10-18: SELL at VAL 0.04914, interaction high 0.04885, ATR15 0.000574.
+        self.assertAlmostEqual(wt.level_stop("SELL", 0.04885, 0.04914, 0.000574),
+                               0.04914 + 0.2 * 0.000574)
+        # Interaction already beyond the level: the extreme rules.
+        self.assertAlmostEqual(wt.level_stop("SELL", 0.0493, 0.04914, 0.0005), 0.0493 + 0.0001)
+        self.assertAlmostEqual(wt.level_stop("BUY", 101.0, 100.0, 1.0), 99.8)
+
+
 class Bracket(unittest.TestCase):
     def test_fill_minute_counts_only_against(self):
         # fill minute spikes to the target but also dips to the stop: stop (conservative)

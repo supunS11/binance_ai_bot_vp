@@ -112,6 +112,15 @@ def stop_price(side, extreme, atr15):
     return extreme - STOP_BUFFER_ATR15 * atr15 if side == "BUY" else extreme + STOP_BUFFER_ATR15 * atr15
 
 
+def level_stop(side, extreme, level, atr15):
+    """Stop for a level trade (T, X, F, FC): beyond the interaction extreme AND beyond the level
+    itself. A stop between the entry and the level is hit by an ordinary test of the level -
+    the very event the trade sells into (added 2026-10-18, BASEDUSDT: stop 0.048965 under the
+    VAL 0.04914, stopped at 0.04903 without the level being tested)."""
+    beyond = min(extreme, level) if side == "BUY" else max(extreme, level)
+    return stop_price(side, beyond, atr15)
+
+
 def pick_targets(side, entry, risk, candidates):
     """(T1, T2) from candidate prices: T1 nearest beyond entry, T2 nearest at >= 2R."""
     sgn = 1 if side == "BUY" else -1

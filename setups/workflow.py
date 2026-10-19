@@ -511,7 +511,8 @@ class Workflow:
         span = closed[w["i"]:i_dec + 1]
         extreme = min(c.low for c in span) if side == "BUY" else max(c.high for c in span)
         a15 = atr15(upto, day.atr)
-        stop = wt.stop_price(side, extreme, a15)
+        stop = (wt.level_stop(side, extreme, w["level"], a15) if config.WF_STOP_BEYOND_LEVEL
+                else wt.stop_price(side, extreme, a15))
         entry = closed[i_dec].close
         t1, t2 = self._targets(day, path, side, entry, abs(entry - stop), upto)
         stages = res["stages"]

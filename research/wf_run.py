@@ -158,7 +158,8 @@ def confirm_trades(ctx, w, res, i_dec, mode):
     side, path = w["side"], w["path"]
     extreme = float(np.min(ctx.arr[2][w["i"]:i_dec + 1])) if side == "BUY" \
         else float(np.max(ctx.arr[1][w["i"]:i_dec + 1]))
-    stop = wt.stop_price(side, extreme, ctx.atr15(i_dec))
+    stop = (wt.level_stop(side, extreme, w["level"], ctx.atr15(i_dec)) if config.WF_STOP_BEYOND_LEVEL
+            else wt.stop_price(side, extreme, ctx.atr15(i_dec)))
     rows = []
     a = wt.entry_a(ctx.arr, i_dec, side, res["ini_high"], ctx.tick)
     if a is None:
@@ -326,7 +327,8 @@ def ledger_trade_row(ctx, flow, w, t0, mode):
     side = w["side"]
     extreme = float(np.min(ctx.arr[2][w["i"]:i_dec + 1])) if side == "BUY" \
         else float(np.max(ctx.arr[1][w["i"]:i_dec + 1]))
-    stop = wt.stop_price(side, extreme, ctx.atr15(i_dec))
+    stop = (wt.level_stop(side, extreme, w["level"], ctx.atr15(i_dec)) if config.WF_STOP_BEYOND_LEVEL
+            else wt.stop_price(side, extreme, ctx.atr15(i_dec)))
     m = wt.entry_m(ctx.arr, i_dec)
     if m is None:
         return {**out, "entry": "M", "filled": 0, "skip": "no_bar"}

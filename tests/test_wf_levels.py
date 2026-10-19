@@ -77,6 +77,22 @@ class ValueWatches(unittest.TestCase):
         self.assertFalse([x for x in w if x["path"] == "F" and x["kind"] == "VAL"])
         self.assertTrue([x for x in w if x["path"] == "X" and x["side"] == "BUY"])
 
+    def test_t1_cancelled_after_reclaim_of_value(self):
+        # The BASEDUSDT sequence: accepted below VAL (2 x 30m at 94.5, still inside the zone),
+        # back inside value for two 30m closes (97), then a dip below the zone and back up
+        # into it: the breakdown no longer stands - no T1.
+        path = hold(100, 30) + hold(94.5, 60) + hold(97, 60) + [93.5, 93.0, 94.2] + hold(93, 10)
+        c = minutes(path)
+        acc = wl.acceptance_times(wl.bars30(c), LV.vah, LV.val)
+        self.assertEqual(wl.reclaim_time(wl.bars30(c), LV.vah, LV.val, acc["BELOW"]),
+                         c[149].close_time + 1)
+        w = wl.value_watches(ws.TREND_DOWN, False, LV, ATR, c, wl.bars30(c))
+        self.assertFalse([x for x in w if x["path"] == "T1"])
+        # Same retest without the reclaim: T1 stands.
+        c2 = minutes(hold(100, 30) + hold(94.5, 60) + [93.0, 94.2] + hold(93, 10))
+        w2 = wl.value_watches(ws.TREND_DOWN, False, LV, ATR, c2, wl.bars30(c2))
+        self.assertEqual([(x["path"], x["side"]) for x in w2], [("T1", "SELL")])
+
     def test_unclear_state_has_no_watches(self):
         c = minutes(hold(100, 30) + hold(108, 60) + [105.8] + hold(107, 20))
         self.assertEqual(wl.value_watches(ws.UNCLEAR, False, LV, ATR, c, wl.bars30(c)), [])
